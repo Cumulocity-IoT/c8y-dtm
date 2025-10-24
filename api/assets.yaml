@@ -1,0 +1,147 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+---
+$schema: https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+group:
+  name: assets
+  description: Manage Assets
+commands:
+  - name: detail
+    description: Retrieves an existing asset.
+    method: GET
+    path: service/dtm/assets/{assetId}
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: withLinkedSeries
+        type: boolean
+        description: Indicates the resource to add the c8y_LinkedSeries fragment in the response.
+        required: false
+      - name: withSubAssets
+        type: boolean
+        description: Indicates the resource to add the sub-assets in the response.
+        required: false
+      - name: withLatestValues
+        type: boolean
+        description: Indicates the resource to fetch the latest values for this Asset and the name of the Source Devices.
+        required: false
+  - name: update
+    description: Updates an existing asset.
+    method: PUT
+    path: service/dtm/assets/{assetId}
+    descriptionLong: >-
+      All properties of the asset can be updated, including name, type, and fragments except the id. Missing properties
+      in the request body will not be removed but stay unchanged. Fragments, however, will be replaced completely, so
+      missing properties in a fragment will be removed. Required user role: ROLE_DIGITAL_TWIN_ASSETS_UPDATE AND
+      ROLE_INVENTORY_ADMIN
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: fetchTypeFromSource
+        type: boolean
+        description: >-
+          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
+          Measurements.
+        required: false
+  - name: delete
+    description: Deletes an existing asset.
+    method: DELETE
+    path: service/dtm/assets/{assetId}
+    descriptionLong: 'Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN AND ROLE_INVENTORY_ADMIN'
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+  - name: bulkimport
+    description: Bulk creation of assets.
+    method: POST
+    path: service/dtm/bulkImport
+    descriptionLong: >-
+      In the request body parentAssetId is required only in case of a partial import. Required user role:
+      ROLE_DIGITAL_TWIN_ADMIN.
+  - name: list
+    description: Retrieves all assets registered in your tenant.
+    method: GET
+    path: service/dtm/assets
+    descriptionLong: The query parameter supports a flexible syntax for filtering and ordering results.
+    queryParameters:
+      - name: query
+        type: string
+        description: Use the $filter keyword to specify filtering criteria.
+        required: false
+      - name: withLinkedSeries
+        type: boolean
+        description: Indicates the resource to add the c8y_LinkedSeries fragment in the response.
+        required: false
+      - name: withSubAssets
+        type: boolean
+        description: Indicates the resource to add the sub-assets in the response.
+        required: false
+      - name: onlyRoots
+        type: boolean
+        description: onlyRoots parameter
+        required: false
+      - name: currentPage
+        type: integer
+        description: currentPage parameter
+        required: false
+      - name: pageSize
+        type: integer
+        description: pageSize parameter
+        required: false
+  - name: create
+    description: Creates an Asset, for example, a room within a building.
+    method: POST
+    path: service/dtm/assets
+    descriptionLong: >
+      In general, each asset may consist of:
+      •   The name of the asset.
+      •   The most specific type of the asset.
+      •   Fragments with specific meanings, for example, c8y_Position, c8y_SupportedOperations.
+
+      Any additional custom fragments. The following marker fragments will automatically be added to the asset being
+      created:
+      •   c8y_IsAsset
+      •   c8y_IsDeviceGroupRequired user role: ROLE_DIGITAL_TWIN_ASSETS_CREATE AND ROLE_INVENTORY_CREATE
+    queryParameters:
+      - name: fetchTypeFromSource
+        type: boolean
+        description: >-
+          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
+          Measurements.
+        required: false
+  - name: count
+    description: Counts all assets on your tenant.
+    method: GET
+    path: service/dtm/assets/count
+    descriptionLong: You can optionally apply the filters query and onlyRoots.
+    queryParameters:
+      - name: query
+        type: string
+        description: Use the $filter keyword to specify filtering criteria.
+        required: false
+      - name: onlyRoots
+        type: boolean
+        description: onlyRoots parameter
+        required: false

@@ -1,0 +1,219 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+---
+$schema: https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+group:
+  name: linkedseries
+  description: Manage Linked Series
+commands:
+  - name: updateLabel
+    description: Modifies the label of a linked series for a given asset.
+    method: PUT
+    path: service/dtm/assets/{assetId}/linkedSeries/{fragment}/{series}/label
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: fragment
+        type: string
+        description: fragment identifier
+        pipeline: false
+      - name: series
+        type: string
+        description: series identifier
+        pipeline: false
+  - name: getLinkedSeries
+    description: Retrieves linked series for a given asset.
+    method: GET
+    path: service/dtm/assets/{assetId}/linkedSeries
+    descriptionLong: >-
+      Supports optionally searching for a specific fragment and/or series. The withMeasurementType query parameter is
+      used to explicitly query the type of the measurements which are linked via the source.id. This parameter is only
+      relevant if only one LinkedSeries is to be returned.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: series
+        type: string
+        description: The specific series to search for.
+        required: false
+      - name: fragment
+        type: string
+        description: A characteristic which identifies the measurement.
+        required: false
+      - name: withMeasurementType
+        type: boolean
+        description: Indicates the resource to fetch the Measurement type for this Asset.
+        required: false
+      - name: currentPage
+        type: integer
+        description: currentPage parameter
+        required: false
+      - name: pageSize
+        type: integer
+        description: pageSize parameter
+        required: false
+  - name: addAndUpdateLinkedSeries
+    description: Adds new and updates existing linked series for a given asset.
+    method: POST
+    path: service/dtm/assets/{assetId}/linkedSeries
+    descriptionLong: >
+      Linked series are identified by their fragment and series.
+
+      For each LinkedSeries provided in the body:
+      •   Adds the new linked series when it does not exist.
+      •   Updates the linked series when it already exists.
+
+      Required user role for adding a linked series: ROLE_DIGITAL_TWIN_ASSETS_CREATE or ROLE_DIGITAL_TWIN_ASSETS_ADMIN.
+
+      Required user role for updating a linked series: ROLE_DIGITAL_TWIN_ASSETS_UPDATE or ROLE_DIGITAL_TWIN_ASSETS_ADMIN.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: fetchTypeFromSource
+        type: boolean
+        description: >-
+          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
+          Measurements.
+        required: false
+  - name: deleteLinkedSeries
+    description: Deletes a linked series for a given asset.
+    method: DELETE
+    path: service/dtm/assets/{assetId}/linkedSeries
+    descriptionLong: >-
+      Deletes all linked series. Specify fragment and/or series as query parameters to be more specific about the linked
+      series to be deleted. Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: fragment
+        type: string
+        description: A characteristic which identifies the measurement.
+        required: false
+      - name: series
+        type: string
+        description: The specific series to search for.
+        required: false
+  - name: count
+    description: Counts linked series for a given asset.
+    method: GET
+    path: service/dtm/assets/{assetId}/linkedSeries/count
+    descriptionLong: >-
+      Provides a count of linked series, with optional fragment and series query parameters to filter and count specific
+      linked series.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: fragment
+        type: string
+        description: A characteristic which identifies the measurement.
+        required: false
+      - name: series
+        type: string
+        description: The specific series to search for.
+        required: false
+  - name: list
+    description: Retrieves linked series for all assets on your tenant.
+    method: GET
+    path: service/dtm/assets/linkedSeries
+    descriptionLong: >-
+      Provides a list of linked series, with a set of optional query parameters to filter for specific linked series,
+      asset types or asset ids.
+    queryParameters:
+      - name: assetIds
+        type: string[]
+        description: The asset IDs to search for.
+        required: false
+      - name: type
+        type: string
+        description: The asset type to search for.
+        required: false
+      - name: fragment
+        type: string
+        description: A characteristic which identifies the measurement.
+        required: false
+      - name: series
+        type: string
+        description: The specific series to search for.
+        required: false
+      - name: currentPage
+        type: integer
+        description: currentPage parameter
+        required: false
+      - name: pageSize
+        type: integer
+        description: pageSize parameter
+        required: false
+  - name: getOppositeAssetIds
+    description: Get IDs of all assets linked to a specific device by its ID.
+    method: GET
+    path: service/dtm/assets/linkedSeries/opposites/{deviceId}
+    pathParameters:
+      - name: deviceId
+        type: string
+        description: the ID of the device
+        pipeline: true
+        pipelineAliases:
+          - id
+          - deviceId
+          - device.id
+          - source.id
+  - name: getOppositeAssetIdsByLinkedSeries
+    description: Get IDs of all assets linked to a specific device by its ID, filtered by fragment and series.
+    method: GET
+    path: service/dtm/assets/linkedSeries/opposites/{deviceId}/{fragment}/{series}
+    pathParameters:
+      - name: deviceId
+        type: string
+        description: the ID of the device
+        pipeline: true
+        pipelineAliases:
+          - id
+          - deviceId
+          - device.id
+          - source.id
+      - name: fragment
+        type: string
+        description: the fragment to filter by
+        pipeline: false
+      - name: series
+        type: string
+        description: the series to filter by
+        pipeline: false

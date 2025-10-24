@@ -1,0 +1,151 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+---
+$schema: https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+group:
+  name: linkedseriessource
+  description: Manage Linked Series Source
+commands:
+  - name: getLinkedSeriesSource
+    description: Retrieves the source for a given linked series of an asset.
+    method: GET
+    path: service/dtm/assets/{assetId}/linkedSeries/{fragment}/{series}/source
+    descriptionLong: Linked series are identified by their fragment and series.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: fragment
+        type: string
+        description: fragment identifier
+        pipeline: false
+      - name: series
+        type: string
+        description: series identifier
+        pipeline: false
+  - name: updateLinkedSeriesSource
+    description: Updates an existing source for a given linked series of an asset.
+    method: PUT
+    path: service/dtm/assets/{assetId}/linkedSeries/{fragment}/{series}/source
+    descriptionLong: >-
+      Linked series are identified by their fragment and series. Required user role: ROLE_DIGITAL_TWIN_ASSETS_UPDATE or
+      ROLE_DIGITAL_TWIN_ASSETS_ADMIN or ROLE_DIGITAL_TWIN_LINKING_UPDATE or ROLE_DIGITAL_TWIN_LINKING_ADMIN.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: fragment
+        type: string
+        description: fragment identifier
+        pipeline: false
+      - name: series
+        type: string
+        description: series identifier
+        pipeline: false
+    queryParameters:
+      - name: fetchTypeFromSource
+        type: boolean
+        description: >-
+          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
+          Measurements.
+        required: false
+  - name: createLinkedSeriesSource
+    description: Adds a new source for a given linked series of an asset.
+    method: POST
+    path: service/dtm/assets/{assetId}/linkedSeries/{fragment}/{series}/source
+    descriptionLong: >-
+      Linked series are identified by their fragment and series. Required user role: ROLE_DIGITAL_TWIN_ASSETS_CREATE or
+      ROLE_DIGITAL_TWIN_ASSETS_ADMIN or ROLE_DIGITAL_TWIN_LINKING_CREATE or ROLE_DIGITAL_TWIN_LINKING_ADMIN.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: fragment
+        type: string
+        description: fragment identifier
+        pipeline: false
+      - name: series
+        type: string
+        description: series identifier
+        pipeline: false
+    queryParameters:
+      - name: fetchTypeFromSource
+        type: boolean
+        description: >-
+          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
+          Measurements.
+        required: false
+  - name: deleteLinkedSeriesSource
+    description: Deletes an existing source for a given linked series of an asset.
+    method: DELETE
+    path: service/dtm/assets/{assetId}/linkedSeries/{fragment}/{series}/source
+    descriptionLong: >-
+      Linked series are identified by their fragment and series. Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN or
+      ROLE_DIGITAL_TWIN_LINKING_ADMIN.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: fragment
+        type: string
+        description: fragment identifier
+        pipeline: false
+      - name: series
+        type: string
+        description: series identifier
+        pipeline: false
+  - name: updateMeasurementType
+    description: Modifies the type of a source of a linked series for a given asset.
+    method: PUT
+    path: service/dtm/assets/{assetId}/linkedSeries/{fragment}/{series}/source/type
+    descriptionLong: >-
+      If the fetchTypeFromSource is set to true, the type specified in the body of the request will be ignored. Instead,
+      the value is fetched from the last measurement of the device defined by the which source.id.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: fragment
+        type: string
+        description: fragment identifier
+        pipeline: false
+      - name: series
+        type: string
+        description: series identifier
+        pipeline: false
+    queryParameters:
+      - name: fetchTypeFromSource
+        type: boolean
+        description: >-
+          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
+          Measurements.
+        required: false
