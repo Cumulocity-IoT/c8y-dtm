@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+
+# DTM Migrations - run-subtenants command
+# Run a command against all subtenants of a microservice
+
+# Stop on unexpected errors
+set -e
+
+# Logging helper functions (output to stderr)
+warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
+error() { echo -e "\033[1;31mERROR $*\033[0m" >&2; }
+info() { echo -e "INFO  $*" >&2; }
+success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
+
+# Help text
+help() {
+    cat <<EOF
+Run a command against all subtenants of a microservice
+
+Usage:
+    c8y dtm migration run-subtenants --microservice <name> -- <command> [args...]
+
+Description:
+    This command runs a specified command against all subtenants that are 
+    subscribed to a microservice. The command is executed in a clean environment
+    with credentials for each subtenant.
+
+
+Flags:
+    --microservice <name>      Name of the microservice (required)
+    --tenants <list>           Comma-separated list of tenant ids to process (optional)
+    -h, --help                 Show this help message
+
+Examples:
+    # Run create-external-ids on all subtenants
+    c8y dtm migration run-subtenants --microservice dtmmigration -- \\
+        c8y dtm migration create-external-ids --id-template "dtm_{id}"
+
+    # Run custom command with multiple arguments
+    c8y dtm migration run-subtenants --microservice myservice -- \\
+        c8y inventory find --fragmentType c8y_IsAsset
+
+    # List all microservices
+    c8y microservices list --includeAll --output csv --select name
+
+    # List all subtenants for a microservice
+    c8y microservices serviceusers get --id dtmmigration --output csv --includeAll --select tenant
+
+Requirements:
+    - go-c8y-cli authenticated session
+    - Microservice must be subscribed to subtenants
+
+EOF
+    exit 0
+}
+
+# Default values
+MICROSERVICE_NAME=""
+TENANT_FILTER=""
+COMMAND_ARGS=()
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --microservice)
+            MICROSERVICE_NAME="$2"
+            shift 2
+            ;;
+        --tenants)
+            TENANT_FILTER="$2"
+            shift 2
+            ;;
+        -h|--help)
+            help
+            ;;
+        --)
+            shift
+            COMMAND_ARGS=("$@")
+            break
+            ;;
+        *)
+            error "Unknown option: $1"
+            help
+            ;;
+    esac
+done
+
+# Validate arguments
+if [ -z "$MICROSERVICE_NAME" ]; then
+    error "Microservice name is required. Use --microservice option"
+    exit 1
+fi
+
+if [ ${#COMMAND_ARGS[@]} -eq 0 ]; then
+    error "No command specified. Use -- followed by the command to run"
+    exit 1
+fi
+
+# Check prerequisites
+if ! command -v c8y >/dev/null 2>&1; then
+    error "go-c8y-cli (c8y) is not installed or not in PATH"
+    exit 1
+fi
+
+# Check if authenticated
+if ! c8y currentuser get >/dev/null 2>&1; then
+    error "Not authenticated with Cumulocity. Please run 'set-session' first"
+    exit 1
+fi
+
+# Run a command in a clean shell with specific credentials
+run_in_c8y_shell() {
+    local user="$1"
+    local pass="$2"
+    local tenant="$3"
+    shift 3
+
+    # Extract base host from C8Y_HOST and construct tenant-specific host
+    local base_host="${C8Y_HOST:-}"
+    base_host="${base_host#https://}"
+    base_host="${base_host#http://}"
+    if [[ "$base_host" =~ ^[^.]+\.(.+)$ ]]; then
+        base_host="${base_host#*.}"
+    fi
+    local tenant_host="https://${tenant}.${base_host}"
+
+    # Build command and inject credential flags at the end
+    local cmd=("$@")
+
+    env -i \
+        PATH="$PATH" \
+        HOME="$HOME" \
+        LANG="en_US.UTF-8" \
+        CI=true \
+        C8Y_HOST="$tenant_host" \
+        C8Y_TENANT="$tenant" \
+        C8Y_USER="$user" \
+        C8Y_PASSWORD="$pass" \
+        "${cmd[@]}"
+}
+
+# Verify microservice exists
+microservice_exists=$(c8y microservices list --includeAll --output csv --select name | grep -Fx "$MICROSERVICE_NAME" || true)
+if [ -z "$microservice_exists" ]; then
+    error "Microservice '$MICROSERVICE_NAME' does not exist"
+    exit 1
+fi
+
+# Get list of subtenants
+subtenant_list=$(c8y microservices serviceusers get --id "$MICROSERVICE_NAME" --includeAll --output json)
+# Optionally filter by tenant ids if --tenants is set
+if [ -n "$TENANT_FILTER" ]; then
+    subtenant_list=$(echo "$subtenant_list" | jq -c --arg tenants "$TENANT_FILTER" '($tenants | split(",")) as $arr | select(.tenant and (.tenant | IN($arr[])))')
+fi
+
+# Single check: count non-empty lines and ensure > 0
+subtenant_count=$(echo "$subtenant_list" | sed '/^\s*$/d' | wc -l | tr -d ' ')
+if [ "${subtenant_count:-0}" -le 0 ]; then
+    error "No subtenants subscribed to microservice: $MICROSERVICE_NAME"
+    exit 1
+fi
+
+info "Found $subtenant_count subtenant(s)"
+
+total_success=0
+total_failed=0
+parent_tenant="$C8Y_TENANT"
+
+while read -r obj; do
+    serviceuser=$(echo "$obj" | jq -r '.name // empty')
+    password=$(echo "$obj" | jq -r '.password // empty')
+    tenant=$(echo "$obj" | jq -r '.tenant // empty')
+
+    if [ -z "$serviceuser" ] || [ -z "$password" ] || [ -z "$tenant" ]; then
+        warn "Skipping invalid subtenant object: $obj"
+        continue
+    fi
+
+    # Skip current tenant
+    if [ -z "$tenant" ] || [ "$tenant" == "$parent_tenant" ]; then
+        info "Skipping current tenant: $tenant"
+        continue
+    fi
+
+    info "Running on subtenant: $tenant (user: $serviceuser)"
+
+    if run_in_c8y_shell "$serviceuser" "$password" "$tenant" "${COMMAND_ARGS[@]}" </dev/null; then
+        success "Subtenant $tenant completed successfully"
+        ((total_success++))
+    else
+        rc=$?
+        warn "Subtenant $tenant failed with exit code $rc"
+        ((total_failed++))
+    fi
+done < <(echo "$subtenant_list" | jq -c '.')
+
+success "Completed: $total_success successful, $total_failed failed"
+
+if [ $total_failed -gt 0 ]; then
+    exit 1
+fi
+
+exit 0

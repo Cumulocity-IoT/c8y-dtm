@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-# DTM Migrations - create-external-ids command
 # Create external IDs for DTM assets based on template with parallel processing
 
 # Stop on unexpected errors
@@ -15,24 +14,28 @@ success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
 # Help text
 help() {
     cat <<EOF
-Create external IDs for DTM assets based on template
+Create external IDs for DTM assets to be used with upserting assets.
 
 Usage:
-    c8y dtm-migrations create-external-ids [FLAGS]
+    c8y dtm migration externalids-create [FLAGS]
 
 Description:
     This command creates external IDs for DTM assets using a configurable template.
-    Uses the DTM Asset API for efficient asset querying and supports parallel
-    processing for large sets of assets.
+    All assets or all assets matching a given query will be updated with a
+    c8y_ExternalId fragment generated based on the provided template. The template
+    can include placeholders for any asset fragment or property. 
+    
+    For the c8y_ExternalId, a external id of type c8y_Asset will be created in the
+    Identity API.
 
 Flags:
-    --id-template <template>   Template for generating external IDs (required)
-                               Supports placeholders for any asset fragment or property
-    --workers <count>          Number of parallel workers (default: 4)
-    --filter <query>           Query to filter assets (e.g., "type eq 'MyAssetType'", default: "not(has(${EXTERNAL_ID_FRAGMENT}))")
-    --json-map <file>          JSON file to save asset list with external IDs (default: assets_with_external_ids.json)
-    -h, --help                 Show this help message
-    --examples                 Show usage examples
+    -t, --id-template <template> Template for generating external IDs (required)
+                                 Supports placeholders for any asset fragment or property
+    -u, --use-asset-upsert       Use asset upsert (c8y dtm assets update) for external ID creation (default: false)
+    -l, --logDir <directory>     Directory for log files (default: current directory)
+    -f, --filter <query>         Query to filter assets (e.g., "type eq 'MyAssetType'", default: "not(has(${EXTERNAL_ID_FRAGMENT}))")
+    -h, --help                   Show this help message
+        --examples               Show usage examples
 
 Template Placeholders:
     {<fragment>}               Any fragment (e.g., {name} or {id})
@@ -44,7 +47,6 @@ Template Placeholders:
 Requirements:
     - go-c8y-cli authenticated session (dev mode)
     - jq for JSON processing
-    - DTM Asset API access (feature toggle: dtm.asset-instance-api)
 
 EOF
 
@@ -55,13 +57,13 @@ examples () {
   cat <<EOF
 Examples:
     # Create external IDs with simple ID template
-    c8y dtm-migrations create-external-ids --id-template "dtm_{id}"
+    c8y dtm migration externalids-create --id-template "dtm_{id}"
     
     # Use asset name and type fragments
-    c8y dtm-migrations create-external-ids --id-template "asset_{name}_{type}" --workers 8
-    
+    c8y dtm migration externalids-create --id-template "asset_{name}_{type}" --workers 8
+
     # Complex template with multiple fragments
-    c8y dtm-migrations create-external-ids --id-template "{owner}_{fragment.name}_{id}"
+    c8y dtm migration externalids-create --id-template "{owner}_{fragment.name}_{id}"
 
     # Check assets have properties used in template and no external IDs yet
     c8y inventory find --fragmentType "c8y_IsAsset" --select id,name,fragment1,fragment2,c8y_ExternalId --pageSize 1
@@ -78,30 +80,29 @@ exit 0
 EXTERNAL_ID_FRAGMENT="c8y_ExternalId"
 
 ID_TEMPLATE=""
-WORKER_COUNT=4
 FILTER_QUERY="not(has(${EXTERNAL_ID_FRAGMENT}))"
-JSON_MAP="assets_with_external_ids.json"
+USE_ASSET_UPSERT=0
+LOG_DIR="."
 POSITIONAL_ARGS=()
 
 # Parse Flags: --flag <value>, or boolean/switch flags: --help|-h
 while [ $# -gt 0 ]; do
     case "$1" in
         # Flag which expects an argument
-        --id-template)
+        -t|--id-template)
             ID_TEMPLATE="$2"
             shift
             ;;
-        --workers)
-            WORKER_COUNT="$2"
-            shift
-            ;;
-        --filter)
+        -f|--filter)
             FILTER_QUERY="$2"
             shift
             ;;
-        --json-map)
-            JSON_MAP="$2"
+        -l|--logDir)
+            LOG_DIR="$2"
             shift
+            ;;
+        -u|--use-asset-upsert)
+            USE_ASSET_UPSERT=1
             ;;
         # Support showing help
         -h|--help)
@@ -118,8 +119,47 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# Ensure log directory exists
+if [ ! -d "$LOG_DIR" ]; then
+    mkdir -p "$LOG_DIR"
+fi
+
+JSON_MAP="$LOG_DIR/dtm-create-externalid-asset-map.json"
+
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
+
+# List of allowed global/inherited flags for c8y identity/inventory calls (short and long forms)
+ALLOWED_FLAGS=(
+  --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
+)
+
+# Parse positional args for allowed global flags
+C8Y_FLAGS=()
+IDX=0
+while [ $IDX -lt ${#POSITIONAL_ARGS[@]} ]; do
+    arg="${POSITIONAL_ARGS[$IDX]}"
+    found=0
+    for flag in "${ALLOWED_FLAGS[@]}"; do
+        if [ "$arg" = "$flag" ]; then
+            found=1
+            C8Y_FLAGS+=("$arg")
+            # If next arg is not another flag, treat as value
+            next_idx=$((IDX+1))
+            next_arg="${POSITIONAL_ARGS[$next_idx]:-}"
+            if [[ ! "$next_arg" =~ ^- ]]; then
+                C8Y_FLAGS+=("$next_arg")
+                IDX=$((IDX+1))
+            fi
+            break
+        fi
+    done
+    if [ $found -eq 0 ]; then
+        error "Unknown or unsupported flag: $arg"
+        exit 1
+    fi
+    IDX=$((IDX+1))
+done
 
 # Function to check prerequisites
 check_prerequisites() {
@@ -179,6 +219,12 @@ extract_template_properties() {
     echo "${properties[@]}"
 }
 
+join() {
+  local IFS="$1"
+  shift
+  echo "$*"
+}
+
 ## Validate arguments
 
 # Check if ID template is provided
@@ -187,29 +233,17 @@ if [ -z "$ID_TEMPLATE" ]; then
     exit 1
 fi
 
-# Validate worker count
-if ! [[ "$WORKER_COUNT" =~ ^[0-9]+$ ]] || [ "$WORKER_COUNT" -lt 1 ]; then
-    error "Worker count must be a positive integer"
-    exit 1
-fi
-
 # Check prerequisites
 check_prerequisites
-
-info "Starting DTM asset external ID creation with template: $ID_TEMPLATE"
-info "Using $WORKER_COUNT parallel workers"
 
 # Extract properties from template
 TEMPLATE_PROPERTIES=()
 for prop in $(extract_template_properties "$ID_TEMPLATE"); do
     TEMPLATE_PROPERTIES+=("$prop")
 done
-info "Template properties: ${TEMPLATE_PROPERTIES[*]}"
 
 # Function to read assets with pagination and generate JSON lines (NDJSON)
 read_assets() {
-    info "Step 1: Collecting all assets and generating external IDs..."
-    
     # Initialize intermediate JSON file (clear it)
     true > "$JSON_MAP"
 
@@ -220,7 +254,6 @@ read_assets() {
     local c8y_args=(inventory find --includeAll --fragmentType "c8y_IsAsset" --output json)
     if [ -n "$FILTER_QUERY" ]; then
         c8y_args+=(--query "$FILTER_QUERY")
-        info "Using filter query: $FILTER_QUERY"
     fi
     page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
 
@@ -231,7 +264,7 @@ read_assets() {
     
     # Build jq object with id, template properties, and external_id
     # Start with id field
-    local jq_obj_fields='id: .id'
+    local jq_obj_fields='id: .id, self: .self'
     # Add template properties (skip 'id' if already added)
     for prop in "${TEMPLATE_PROPERTIES[@]}"; do
         if [ "$prop" != "id" ]; then
@@ -260,7 +293,7 @@ read_assets() {
     total_collected=$(wc -l < "$JSON_MAP" | tr -d ' \n\r\t')
     end_time=$(date +%s)
     elapsed=$((end_time - start_time))
-    success "Step 1 complete: Collected $total_collected assets with external IDs in $JSON_MAP (${elapsed}s)"
+    success "Collected $total_collected assets for $C8Y_TENANT (${elapsed}s)"
     
     return 0
 }
@@ -273,29 +306,76 @@ process_assets() {
     local start_time end_time elapsed
     start_time=$(date +%s)
 
-    info "Processing assets from JSON map: $JSON_MAP"
+    # Create output template for assets. This is used to capture the output of the c8y commands.
+    # We include id, type, c8y_ExternalId, tenant, self, and all template properties.
+    # tenant and self is added to help with debugging and tracking when running across multiple tenants.
+    output_template_fields=(
+        "id: if std.objectHas(output, 'id') then output.id else input.value.id"
+        "type: if std.objectHas(output, 'type') then output.type else input.value.type"
+        "c8y_ExternalId: if std.objectHas(output, 'c8y_ExternalId') then output.c8y_ExternalId else input.value.c8y_ExternalId"
+        "['self']: if std.objectHas(output, 'self') then output['self'] else input.value['self']"
+        "tenant: \"$C8Y_TENANT\""
+    )
 
-    # Use go-c8y-cli pipe input for parallel processing
-    # The intermediate file already contains JSON lines (NDJSON), one per asset
-    cat "$JSON_MAP" | \
-        c8y dtm assets update \
-            --assetId "{id}" \
-            --template "{${EXTERNAL_ID_FRAGMENT}: input.value.external_id}" \
-            --force --workers "$WORKER_COUNT" --progress \
-            1> create-external-ids.log
+    # Add template properties, skipping duplicates and 'self'
+    for prop in "${TEMPLATE_PROPERTIES[@]}"; do
+        [[ "$prop" == "id" || "$prop" == "c8y_ExternalId" || "$prop" == "self" ]] && continue
+        if [[ "$prop" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            output_template_fields+=("$prop: if std.objectHas(output, '$prop') then output.$prop else input.value.$prop")
+        else
+            output_template_fields+=("['$prop']: if std.objectHas(output, '$prop') then output['$prop'] else input.value['$prop']")
+        fi
+    done
 
-    # Optionally, parse the log for errors and count failures
-    total_failed=0
-    if [ -f create-external-ids.log ] && grep -q 'ERROR' create-external-ids.log 2>/dev/null; then
-        total_failed=$(grep -c 'ERROR' create-external-ids.log 2>/dev/null)
+    output_template="{ $(join ', ' "${output_template_fields[@]}") }"
+
+    if [ "$USE_ASSET_UPSERT" = "1" ]; then
+        info "Using asset upsert (c8y dtm assets update) for external ID creation..."
+        cat "$JSON_MAP" | \
+            c8y dtm assets update \
+                --assetId "{id}" \
+                --template "{${EXTERNAL_ID_FRAGMENT}: input.value.external_id}" \
+                --force \
+                --outputTemplate "$output_template" \
+                "${C8Y_FLAGS[@]}" \
+                1>> "$LOG_DIR/dtm-create-externalid-asset-update.log"
+        info "Check $LOG_DIR/dtm-create-externalid-asset-update.log for details..."
+    else
+        # Process in two separate steps (not piped)
+        # Step 1: Update inventory with c8y_ExternalId
+        info "Updating inventory with c8y_ExternalId fragment..."
+        cat "$JSON_MAP" | \
+            c8y inventory update \
+                --template "{c8y_ExternalId: input.value.external_id}" \
+                --force \
+                --outputTemplate "$output_template" \
+                "${C8Y_FLAGS[@]}" \
+                1>> "$LOG_DIR/dtm-create-externalid-inventory-update.log"
+
+        if [ -f "$LOG_DIR/dtm-create-externalid-inventory-update.log" ] && grep -q 'ERROR' "$LOG_DIR/dtm-create-externalid-inventory-update.log" 2>/dev/null; then
+            total_failed=$((total_failed + $(grep -c 'ERROR' "$LOG_DIR/dtm-create-externalid-inventory-update.log" 2>/dev/null)))
+        fi
+
+        # Step 2: Create identity external IDs
+        info "Creating identity external IDs of type c8y_Asset..."
+        cat "$JSON_MAP" | \
+            c8y identity create \
+                --type "c8y_Asset" \
+                --template '{ device: input.value.id, externalId: input.value.external_id }' \
+                --force \
+                "${C8Y_FLAGS[@]}" \
+                1>> "$LOG_DIR/dtm-create-externalid-identity.log"
+
+        if [ -f "$LOG_DIR/dtm-create-externalid-identity.log" ] && grep -q 'ERROR' "$LOG_DIR/dtm-create-externalid-identity.log" 2>/dev/null; then
+            total_failed=$(grep -c 'ERROR' "$LOG_DIR/dtm-create-externalid-identity.log" 2>/dev/null)
+        fi
     fi
+    
     total_processed=$(wc -l < "$JSON_MAP" | tr -d ' \n\r\t')
-
     end_time=$(date +%s)
     elapsed=$((end_time - start_time))
 
-    success "Step 1 complete: Processed $total_processed assets, $total_failed failed (${elapsed}s)"
-    info "Check create-external-ids.log for details"
+    success "Processed $total_processed assets for $C8Y_TENANT, $total_failed failed (${elapsed}s)"
 
     return "$total_failed"
 }
@@ -304,14 +384,8 @@ process_assets() {
 export -f process_assets generate_external_id warn error info success
 export ID_TEMPLATE EXTERNAL_ID_FRAGMENT FILTER_QUERY
 
-# Step 1: Read all assets and generate JSON map with external IDs
-info "Starting DTM asset external ID creation with template: $ID_TEMPLATE"
-info "Using $WORKER_COUNT parallel workers"
-
+# Read all assets and generate JSON map with external IDs
 read_assets
-
-# Step 2: Process assets from JSON map
-info "Step 2: Loading all assets and create external IDs..."
 
 # Process assets and get the return code (failure count)
 process_assets
