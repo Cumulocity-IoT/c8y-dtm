@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+
+# DTM Migrations - bootstrap-microservice command
+# Create microservice application and retrieve service user credentials
+
+# Stop on unexpected errors
+set -e
+
+# Logging helper functions (output to stderr)
+warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
+error() { echo -e "\033[1;31mERROR $*\033[0m" >&2; }
+info() { echo -e "INFO  $*" >&2; }
+success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
+
+# Help text
+help() {
+    cat <<EOF
+Bootstrap a microservice application and retrieve service user credentials
+
+Usage:
+    c8y dtm migration bootstrap-microservice --name <service-name> [FLAGS]
+
+Description:
+    Creates a microservice application in Cumulocity, subscribes it to a tenant,
+    and retrieves the service user credentials. Returns credentials as JSON for
+    piping to other commands.
+
+Flags:
+        --name <name>           Microservice name (required)
+        --context <path>        Context path (default: same as name)
+        --category <category>   Settings category (default: same as name)
+        --roles <json>          Required roles as JSON array (default: admin roles)
+        --tenant <id>           Tenant ID (default: current C8Y_TENANT)
+        --remove-existing       Remove existing application with same name (default: false)
+    -o, --output <format>       Output format (supported: json)
+    -s, --subscribe-subtenants  Subscribe application to all subtenants after creation (default: false)
+
+    -h, --help                  Show this help message
+        --list-default-roles    List all default roles and exit
+        --examples              Show usage examples
+
+Output:
+    JSON object with service user credentials:
+    {
+      "tenant": "t12345",
+      "user": "service_myservice",
+      "password": "...",
+      "permissions": ["ROLE_INVENTORY_ADMIN", ...],
+      "applicationId": "123",
+      "serviceName": "myservice"
+    }
+
+Requirements:
+    - go-c8y-cli authenticated session (tenant admin)
+    - jq for JSON processing
+
+EOF
+    exit 0
+}
+
+examples() {
+    cat <<EOF
+Examples:
+    # Create microservice and get credentials
+    c8y dtm migration bootstrap-microservice --name myservice
+
+    # Specify custom roles and tenant
+    c8y dtm migration bootstrap-microservice --name myservice --tenant t12345 --roles '["ROLE_INVENTORY_ADMIN"]'
+
+    # Pipe output to set session
+    c8y dtm migration bootstrap-microservice --name myservice --output json | jq -r '"export C8Y_USER=\(.user) C8Y_PASSWORD=\(.password) C8Y_TENANT=\(.tenant)"'
+
+EOF
+    exit 0
+}
+
+# Default values
+SERVICE_NAME=""
+CONTEXT_PATH=""
+SETTINGS_CATEGORY=""
+# ROLE_DIGITAL_TWIN_ASSETS_ADMIN", "ROLE_DIGITAL_TWIN_LINKING_ADMIN","ROLE_DIGITAL_TWIN_ADMIN",
+SERVICE_ROLES='["ROLE_OPTION_MANAGEMENT_READ","ROLE_MEASUREMENT_ADMIN","ROLE_EVENT_ADMIN","ROLE_INVENTORY_READ","ROLE_INVENTORY_ADMIN","ROLE_IDENTITY_READ","ROLE_IDENTITY_ADMIN","ROLE_NOTIFICATION_2_ADMIN"]'
+TENANT_ID="${C8Y_TENANT:-}"
+REMOVE_APP_IF_EXISTS=FALSE
+SUBSCRIBE_SUBTENANTS=FALSE
+OUTPUT_FORMAT=""
+LIST_DEFAULT_ROLES=FALSE
+
+# Parse flags
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --name)
+            SERVICE_NAME="$2"
+            shift
+            ;;
+        --context)
+            CONTEXT_PATH="$2"
+            shift
+            ;;
+        --category)
+            SETTINGS_CATEGORY="$2"
+            shift
+            ;;
+        --roles)
+            SERVICE_ROLES="$2"
+            shift
+            ;;
+        --tenant)
+            TENANT_ID="$2"
+            shift
+            ;;
+        --remove-existing)
+            REMOVE_APP_IF_EXISTS=TRUE
+            ;;
+        -s|--subscribe-subtenants)
+            SUBSCRIBE_SUBTENANTS=TRUE
+            ;;
+        --examples)
+            examples
+            ;;
+        -h|--help)
+            help
+            ;;
+        -o|--output)
+            OUTPUT_FORMAT="$2"
+            shift
+            ;;
+        --list-default-roles)
+            LIST_DEFAULT_ROLES=TRUE
+            ;;
+        *)
+            warn "Unknown option: $1"
+            ;;
+    esac
+    shift
+
+done
+
+# List default roles and exit if requested
+if [ "$LIST_DEFAULT_ROLES" = "TRUE" ]; then
+    echo "$SERVICE_ROLES"
+    exit 0
+fi
+
+if [ -z "$SERVICE_NAME" ]; then
+    error "Service name is required. Use --name option"
+    help
+fi
+
+if [ -z "$TENANT_ID" ]; then
+    error "Tenant ID is required. Use --tenant option or set C8Y_TENANT"
+    exit 1
+fi
+
+# Set defaults based on service name
+CONTEXT_PATH="${CONTEXT_PATH:-$SERVICE_NAME}"
+SETTINGS_CATEGORY="${SETTINGS_CATEGORY:-$SERVICE_NAME}"
+
+# Check prerequisites
+if ! command -v c8y >/dev/null 2>&1; then
+    error "go-c8y-cli (c8y) is not installed or not in PATH"
+    exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+    error "jq is not installed or not in PATH"
+    exit 1
+fi
+
+if ! c8y currentuser get >/dev/null 2>&1; then
+    error "Not authenticated with Cumulocity. Please run 'set-session' first"
+    exit 1
+fi
+
+# Run a c8y command in a clean shell with specific credentials
+run_in_c8y_shell() {
+    local user="$1"
+    local pass="$2"
+    local tenant="$3"
+    shift 3
+    C8Y_HOST_ARG="${C8Y_HOST:-}"
+    zsh -c 'export C8Y_HOST="'"$C8Y_HOST_ARG"'" C8Y_TENANT="'"$tenant"'" C8Y_USER="'"$user"'" C8Y_PASSWORD="'"$pass"'"; "$@"' _ "$@"
+}
+
+# Check if application already exists
+app_id=$(c8y applications list --type MICROSERVICE --select id --filter "name eq '$SERVICE_NAME'" --includeAll --output csv --force 2>/dev/null) || true
+
+if [ -n "$app_id" ]; then
+    if [ "$REMOVE_APP_IF_EXISTS" = "TRUE" ]; then
+        info "Removing existing application (ID: $app_id)..."
+        c8y applications delete --id "$app_id" --force
+        app_id=""
+    else
+        error "Application with name '$SERVICE_NAME' already exists (ID: $app_id). Use --remove-existing to delete it first."
+        exit 1
+    fi
+fi
+
+# Create application if needed
+if [ -z "$app_id" ]; then
+    app_data="{\"contextPath\":\"$CONTEXT_PATH\",\"key\":\"${SERVICE_NAME}-key\",\"name\":\"$SERVICE_NAME\",\"settingsCategory\":\"$SETTINGS_CATEGORY\",\"requiredRoles\":$SERVICE_ROLES,\"type\":\"MICROSERVICE\"}"
+    app_create_output=$(c8y applications create --data "$app_data" --select id --output csv --force)
+    app_id="$app_create_output"
+    if [ -z "$app_id" ]; then
+        error "Failed to create application"
+        error "$app_create_output"
+        exit 1
+    fi
+    info "Created application $SERVICE_NAME, id $app_id"
+fi
+
+# Subscribe application to tenant
+app_subscription=$(c8y tenants applications enable --application "$app_id" --tenant "$TENANT_ID" --force --output json)
+
+if [ -z "$app_subscription" ] || [ -z "$(echo "$app_subscription" | jq '.application // empty')" ]; then
+  error "Failed to subscribe application to tenant"
+  error "$app_subscription"
+  exit 1
+fi
+
+# Get bootstrap user credentials
+bootstrap_json=$(c8y microservices getBootstrapUser --id "$app_id" --output json --force)
+bootstrap_user=$(echo "$bootstrap_json" | jq -r .name)
+bootstrap_pass=$(echo "$bootstrap_json" | jq -r .password)
+
+if [ -z "$bootstrap_user" ] || [ "$bootstrap_user" = "null" ]; then
+    error "Failed to get bootstrap user"
+    exit 1
+fi
+
+# Get service user credentials (using bootstrap user in clean shell)
+service_json=$(run_in_c8y_shell "$bootstrap_user" "$bootstrap_pass" "$TENANT_ID" c8y microservices serviceusers get --id "$SERVICE_NAME" --output json --force)
+
+service_user=$(echo "$service_json" | jq -r '.name' 2>/dev/null)
+service_pass=$(echo "$service_json" | jq -r '.password' 2>/dev/null)
+service_tenant=$(echo "$service_json" | jq -r '.tenant' 2>/dev/null)
+
+if [ -z "$service_user" ] || [ "$service_user" = "null" ] || [ "$service_user" = "$bootstrap_user" ]; then
+    error "Failed to get service user"
+    exit 1
+fi
+
+# Get service user permissions
+user_json=$(run_in_c8y_shell "$service_user" "$service_pass" "$service_tenant" c8y currentuser get --output json --force)
+user_permissions=$(echo "$user_json" | jq '[.effectiveRoles[].id]' 2>/dev/null)
+
+success "Microservice bootstrapped successfully"
+
+# Subscribe to all subtenants if requested
+if [ "$SUBSCRIBE_SUBTENANTS" = "TRUE" ]; then
+    info "Subscribing application to all subtenants..."
+    subscribed_tenants=$(c8y tenants list --select id --includeAll --output csv | \
+        c8y tenants applications enable --application "$app_id" --tenant - --force --output csv)
+    success "Subscribed to $(wc -l <<<"$subscribed_tenants" | tr -d ' ') tenant(s)."
+fi
+
+# Output result as JSON to stdout
+if [ "$OUTPUT_FORMAT" = "json" ]; then
+  jq -n \
+    --arg tenant "$service_tenant" \
+    --arg user "$service_user" \
+    --arg password "$service_pass" \
+    --argjson permissions "$user_permissions" \
+    --arg appId "$app_id" \
+    --arg serviceName "$SERVICE_NAME" \
+    '{
+      tenant: $tenant,
+      user: $user,
+      password: $password,
+      permissions: $permissions,
+      applicationId: $appId,
+      serviceName: $serviceName
+    }'
+fi

@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+
+# Verify that assets with c8y_ExternalId have matching external IDs in the identity API
+
+set -e
+
+warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
+error() { echo -e "\033[1;31mERROR $*\033[0m" >&2; }
+info() { echo -e "INFO  $*" >&2; }
+success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
+
+help() {
+    cat <<EOF
+Verify external IDs for DTM assets
+
+Usage:
+    c8y dtm migration externalids-check [FLAGS]
+
+Description:
+    This command checks that all DTM assets with a c8y_ExternalId fragment have a corresponding external ID of type c8y_Asset in the identity API.
+
+Flags:
+        --output <file>       Output file for results (default: asset_external_id_check_results.json)
+    -h, --help                Show this help message
+        --examples            Show usage examples
+EOF
+    exit 0
+}
+
+examples() {
+    cat <<EOF
+Examples:
+    c8y dtm migration externalids-check --workers 10
+    c8y dtm migration externalids-check --output results.json
+EOF
+    exit 0
+}
+
+OUTPUT_FILE="asset_external_id_check_results.json"
+POSITIONAL_ARGS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --output)
+            OUTPUT_FILE="$2"
+            shift
+            ;;
+        -h|--help)
+            help
+            ;;
+        --examples)
+            examples
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
+set -- "${POSITIONAL_ARGS[@]}"
+
+# List of allowed global/inherited flags for c8y identity list (short and long forms)
+ALLOWED_FLAGS=(
+  --workers --progress --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --noLog --progress --timeout --workers --verbose
+)
+
+# Parse positional args for allowed global flags
+C8Y_FLAGS=()
+IDX=0
+while [ $IDX -lt ${#POSITIONAL_ARGS[@]} ]; do
+    arg="${POSITIONAL_ARGS[$IDX]}"
+    found=0
+    for flag in "${ALLOWED_FLAGS[@]}"; do
+        if [ "$arg" = "$flag" ]; then
+            found=1
+            C8Y_FLAGS+=("$arg")
+            # If next arg is not another flag, treat as value
+            next_idx=$((IDX+1))
+            next_arg="${POSITIONAL_ARGS[$next_idx]:-}"
+            if [[ ! "$next_arg" =~ ^- ]]; then
+                C8Y_FLAGS+=("$next_arg")
+                IDX=$((IDX+1))
+            fi
+            break
+        fi
+    done
+    if [ $found -eq 0 ]; then
+        error "Unknown or unsupported flag: $arg"
+        exit 1
+    fi
+    IDX=$((IDX+1))
+done
+
+check_prerequisites() {
+    if ! command -v c8y >/dev/null 2>&1; then
+        error "go-c8y-cli (c8y) is not installed or not in PATH"
+        exit 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        error "jq is not installed or not in PATH. Please install jq for JSON processing"
+        exit 1
+    fi
+    if ! c8y currentuser get >/dev/null 2>&1; then
+        error "Not authenticated with Cumulocity. Please run 'set-session' first"
+        exit 1
+    fi
+}
+
+check_prerequisites
+
+assets=$(c8y inventory find --fragmentType "c8y_IsAsset" --includeAll --select id,c8y_ExternalId --output json)
+total=$(echo "$assets" | jq -s 'length')
+
+if [ "$total" -eq 0 ]; then
+    info "No assets found with c8y_ExternalId fragment. Exiting."
+    exit 0
+fi
+
+info "Found $total assets with c8y_ExternalId fragment. Checking external IDs..."
+
+result=$(echo "$assets" | c8y identity list \
+    --silentStatusCodes 404 \
+    --silentExit \
+    --withError \
+    --output json \
+    --outputTemplate '
+      if std.length(output) > 0 then
+        [input.value + {
+          type: if std.objectHas(item, "type") then std.toString(item.type) else "",
+          externalId: if std.objectHas(item, "externalId") then std.toString(item.externalId) else "",
+          "error": if std.objectHas(item, "externalId") then
+                      if std.toString(item.externalId) != input.value.c8y_ExternalId then "ExternalIdMismatch" else ""
+                    else ""
+        } for item in output]
+      else
+        [input.value + {type: "", externalId: "", "error": "MissingExternalId"}]
+    ' \
+    "${C8Y_FLAGS[@]}" 
+)
+
+echo "$result" > "$OUTPUT_FILE"
+
+missing_count=$(echo "$result" | jq -s '[.[] | select(.error == "MissingExternalId")] | length')
+mismatch_count=$(echo "$result" | jq -s '[.[] | select(.error == "ExternalIdMismatch")] | length')
+match_count=$(echo "$result" | jq -s '[.[] | select(.error == "")] | length')
+
+echo "$result" | jq -r '
+  if .error == "MissingExternalId" then
+    "\(.id) MissingExternalId (expected \"\(.c8y_ExternalId)\")"
+  elif .error == "ExternalIdMismatch" then
+    "\(.id) ExternalIdMismatch (expected \"\(.c8y_ExternalId)\", got \"\(.externalId)\")"
+  elif .error != "" then
+    "\(.id) \(.error)"
+  else
+    empty
+  end
+' | while read -r line; do
+    error "$line"
+done
+
+success "Completed checking all assets: $match_count match, $missing_count missing, $mismatch_count mismatched. Results in $OUTPUT_FILE"
