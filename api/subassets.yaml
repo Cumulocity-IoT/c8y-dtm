@@ -85,9 +85,9 @@ commands:
         required: false
       - name: currentPage
         type: integer
-        description: currentPage parameter
+        description: currentPage query parameter
         required: false
       - name: pageSize
         type: integer
-        description: pageSize parameter
+        description: pageSize query parameter
         required: false
