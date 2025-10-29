@@ -58,13 +58,17 @@ commands:
         type: boolean
         description: Indicates the resource to fetch the Measurement type for this Asset.
         required: false
+      - name: withJsonSchema
+        type: boolean
+        description: If true, the response includes the inferred JSON schema describing all linked series of this Asset.
+        required: false
       - name: currentPage
         type: integer
-        description: currentPage parameter
+        description: currentPage query parameter
         required: false
       - name: pageSize
         type: integer
-        description: pageSize parameter
+        description: pageSize query parameter
         required: false
   - name: addAndUpdateLinkedSeries
     description: Adds new and updates existing linked series for a given asset.
@@ -74,12 +78,14 @@ commands:
       Linked series are identified by their fragment and series.
 
       For each LinkedSeries provided in the body:
+
       •   Adds the new linked series when it does not exist.
-      •   Updates the linked series when it already exists.
 
-      Required user role for adding a linked series: ROLE_DIGITAL_TWIN_ASSETS_CREATE or ROLE_DIGITAL_TWIN_ASSETS_ADMIN.
+      •   Updates the linked series when it already exists.Required user role for adding a linked series:
+      ROLE_DIGITAL_TWIN_ASSETS_CREATE or ROLE_DIGITAL_TWIN_ASSETS_ADMIN.
 
-      Required user role for updating a linked series: ROLE_DIGITAL_TWIN_ASSETS_UPDATE or ROLE_DIGITAL_TWIN_ASSETS_ADMIN.
+      Required user role for updating a linked series: ROLE_DIGITAL_TWIN_ASSETS_UPDATE or
+      ROLE_DIGITAL_TWIN_ASSETS_ADMIN.
     pathParameters:
       - name: assetId
         type: string
@@ -175,45 +181,9 @@ commands:
         required: false
       - name: currentPage
         type: integer
-        description: currentPage parameter
+        description: currentPage query parameter
         required: false
       - name: pageSize
         type: integer
-        description: pageSize parameter
+        description: pageSize query parameter
         required: false
-  - name: getOppositeAssetIds
-    description: Get IDs of all assets linked to a specific device by its ID.
-    method: GET
-    path: service/dtm/assets/linkedSeries/opposites/{deviceId}
-    pathParameters:
-      - name: deviceId
-        type: string
-        description: the ID of the device
-        pipeline: true
-        pipelineAliases:
-          - id
-          - deviceId
-          - device.id
-          - source.id
-  - name: getOppositeAssetIdsByLinkedSeries
-    description: Get IDs of all assets linked to a specific device by its ID, filtered by fragment and series.
-    method: GET
-    path: service/dtm/assets/linkedSeries/opposites/{deviceId}/{fragment}/{series}
-    pathParameters:
-      - name: deviceId
-        type: string
-        description: the ID of the device
-        pipeline: true
-        pipelineAliases:
-          - id
-          - deviceId
-          - device.id
-          - source.id
-      - name: fragment
-        type: string
-        description: the fragment to filter by
-        pipeline: false
-      - name: series
-        type: string
-        description: the series to filter by
-        pipeline: false
