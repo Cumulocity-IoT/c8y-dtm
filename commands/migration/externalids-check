@@ -5,7 +5,12 @@
 set -e
 
 warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
-error() { echo -e "\033[1;31mERROR $*\033[0m" >&2; }
+# error <colored-part> <plain-part>
+error() {
+    local colored_part="$1"
+    local plain_part="$2"
+    echo -e "\033[1;31mERROR $colored_part\033[0m$plain_part" >&2
+}
 info() { echo -e "INFO  $*" >&2; }
 success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
 
@@ -85,7 +90,7 @@ while [ $IDX -lt ${#POSITIONAL_ARGS[@]} ]; do
         fi
     done
     if [ $found -eq 0 ]; then
-        error "Unknown or unsupported flag: $arg"
+        error "$arg" " Unknown or unsupported flag"
         exit 1
     fi
     IDX=$((IDX+1))
@@ -93,15 +98,15 @@ done
 
 check_prerequisites() {
     if ! command -v c8y >/dev/null 2>&1; then
-        error "go-c8y-cli (c8y) is not installed or not in PATH"
+    error "go-c8y-cli (c8y)" " is not installed or not in PATH"
         exit 1
     fi
     if ! command -v jq >/dev/null 2>&1; then
-        error "jq is not installed or not in PATH. Please install jq for JSON processing"
+    error "jq" " is not installed or not in PATH. Please install jq for JSON processing"
         exit 1
     fi
     if ! c8y currentuser get >/dev/null 2>&1; then
-        error "Not authenticated with Cumulocity. Please run 'set-session' first"
+    error "Not authenticated with Cumulocity." " Please run 'set-session' first"
         exit 1
     fi
 }
@@ -124,38 +129,49 @@ result=$(echo "$assets" | c8y identity list \
     --withError \
     --output json \
     --outputTemplate '
-      if std.length(output) > 0 then
+      if !std.objectHas(input.value, "c8y_ExternalId") || std.toString(input.value.c8y_ExternalId) == "" then
+        if std.length(output) > 0 then
+          [item + input.value + { "error": "MissingExternalIdInAsset" } for item in output]
+        else
+          [output + {type: "", externalId: "", "error": "MissingExternalIdInAsset"}]
+      else if std.length(output) > 0 then
         [input.value + {
           type: if std.objectHas(item, "type") then std.toString(item.type) else "",
           externalId: if std.objectHas(item, "externalId") then std.toString(item.externalId) else "",
           "error": if std.objectHas(item, "externalId") then
                       if std.toString(item.externalId) != input.value.c8y_ExternalId then "ExternalIdMismatch" else ""
-                    else ""
+                   else ""
         } for item in output]
       else
-        [input.value + {type: "", externalId: "", "error": "MissingExternalId"}]
+        [input.value + {type: "", externalId: "", "error": "MissingIdentityForAsset"}]
     ' \
     "${C8Y_FLAGS[@]}" 
 )
 
 echo "$result" > "$OUTPUT_FILE"
 
-missing_count=$(echo "$result" | jq -s '[.[] | select(.error == "MissingExternalId")] | length')
+no_external_id_count=$(echo "$result" | jq -s '[.[] | select(.error == "MissingExternalIdInAsset")] | length')
+missing_count=$(echo "$result" | jq -s '[.[] | select(.error == "MissingIdentityForAsset")] | length')
 mismatch_count=$(echo "$result" | jq -s '[.[] | select(.error == "ExternalIdMismatch")] | length')
 match_count=$(echo "$result" | jq -s '[.[] | select(.error == "")] | length')
 
 echo "$result" | jq -r '
-  if .error == "MissingExternalId" then
-    "\(.id) MissingExternalId (expected \"\(.c8y_ExternalId)\")"
+  if .error == "MissingExternalIdInAsset" then
+    "\(.id) MissingExternalIdInAsset\t(asset has no c8y_ExternalId, but has \"\(.externalId)\" identity of type c8y_Asset)"
+  elif .error == "MissingIdentityForAsset" then
+    "\(.id) MissingIdentityForAsset\t(expected \"\(.c8y_ExternalId)\" of type c8y_Asset)"
   elif .error == "ExternalIdMismatch" then
-    "\(.id) ExternalIdMismatch (expected \"\(.c8y_ExternalId)\", got \"\(.externalId)\")"
+    "\(.id) ExternalIdMismatch\t\t(expected \"\(.c8y_ExternalId)\", got \"\(.externalId)\")"
   elif .error != "" then
     "\(.id) \(.error)"
   else
     empty
   end
-' | while read -r line; do
-    error "$line"
+' | while read -r id error rest; do
+    if [ -z "$id" ]; then continue; fi
+    id_part="$id $error"
+    rest_part="$rest"
+    error "$id_part" " $rest_part"
 done
 
-success "Completed checking all assets: $match_count match, $missing_count missing, $mismatch_count mismatched. Results in $OUTPUT_FILE"
+success "Completed checking all assets: $match_count match, $no_external_id_count no c8y_ExternalId, $missing_count missing identity, $mismatch_count mismatched. Results in $OUTPUT_FILE"
