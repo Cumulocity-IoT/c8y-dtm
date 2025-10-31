@@ -356,8 +356,8 @@ process_assets() {
     # tenant and self is added to help with debugging and tracking when running across multiple tenants.
     output_template_fields=(
         "id: if std.objectHas(output, 'id') then output.id else input.value.id"
-        "type: if std.objectHas(output, 'type') then output.type else input.value.type"
-        "c8y_ExternalId: if std.objectHas(output, 'c8y_ExternalId') then output.c8y_ExternalId else input.value.c8y_ExternalId"
+        "type: if std.objectHas(output, 'type') then output.type else std.get(input.value, 'type', null)"
+        "c8y_ExternalId: if std.objectHas(output, 'c8y_ExternalId') then output.c8y_ExternalId else std.get(input.value, 'c8y_ExternalId', null)"
         "c8y_ExternalAsset: if std.objectHas(output, 'c8y_ExternalAsset') then output.c8y_ExternalAsset else null"
         "['self']: if std.objectHas(output, 'self') then output['self'] else input.value['self']"
         "tenant: \"$C8Y_TENANT\""
