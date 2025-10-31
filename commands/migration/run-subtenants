@@ -186,11 +186,11 @@ while read -r obj; do
 
     if run_in_c8y_shell "$serviceuser" "$password" "$tenant" "${COMMAND_ARGS[@]}" </dev/null; then
         success "Subtenant $tenant completed successfully"
-        ((total_success++))
+        total_success=$((total_success + 1))
     else
         rc=$?
         warn "Subtenant $tenant failed with exit code $rc"
-        ((total_failed++))
+        total_failed=$((total_failed + 1))
     fi
 done < <(echo "$subtenant_list" | jq -c '.')
 
