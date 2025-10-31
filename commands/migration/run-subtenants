@@ -167,9 +167,9 @@ total_failed=0
 parent_tenant="$C8Y_TENANT"
 
 while read -r obj; do
-    serviceuser=$(echo "$obj" | jq -r '.name // empty')
-    password=$(echo "$obj" | jq -r '.password // empty')
-    tenant=$(echo "$obj" | jq -r '.tenant // empty')
+    serviceuser=$(echo "$obj" | jq -r '.name // ""')
+    password=$(echo "$obj" | jq -r '.password // ""')
+    tenant=$(echo "$obj" | jq -r '.tenant // ""')
 
     if [ -z "$serviceuser" ] || [ -z "$password" ] || [ -z "$tenant" ]; then
         warn "Skipping invalid subtenant object: $obj"
@@ -186,11 +186,11 @@ while read -r obj; do
 
     if run_in_c8y_shell "$serviceuser" "$password" "$tenant" "${COMMAND_ARGS[@]}" </dev/null; then
         success "Subtenant $tenant completed successfully"
-        ((total_success++))
+        total_success=$((total_success + 1))
     else
         rc=$?
         warn "Subtenant $tenant failed with exit code $rc"
-        ((total_failed++))
+        total_failed=$((total_failed + 1))
     fi
 done < <(echo "$subtenant_list" | jq -c '.')
 
