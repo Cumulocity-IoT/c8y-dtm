@@ -283,9 +283,9 @@ check_prerequisites
 
 # Extract properties from template
 TEMPLATE_PROPERTIES=()
-for prop in $(extract_template_properties "$ID_TEMPLATE"); do
+while IFS= read -r prop; do
     TEMPLATE_PROPERTIES+=("$prop")
-done
+done < <(extract_template_properties "$ID_TEMPLATE")
 
 # Function to read assets with pagination and generate JSON lines (NDJSON)
 read_assets() {
@@ -295,8 +295,23 @@ read_assets() {
     local start_time end_time elapsed
     start_time=$(date +%s)
 
-    local page_result
-    local c8y_args=(inventory find --includeAll --fragmentType "c8y_IsAsset" --output json)
+    local select_fields=("id" "self")
+    # Add template properties to select_fields (only unique ones)
+    for prop in "${TEMPLATE_PROPERTIES[@]}"; do
+        if [[ ! " ${select_fields[*]} " == *" ${prop} "* ]]; then
+            select_fields+=("$prop")
+        fi
+    done
+
+    jq_external_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
+    jq_filter="{ $(join_jq_with_error_check "${select_fields[@]}"), external_id:\"$jq_external_id\", tenant: \"$C8Y_TENANT\" }"
+
+    local c8y_args=(inventory find 
+        --includeAll 
+        --fragmentType "c8y_IsAsset" 
+        --select "$(join ',' "${select_fields[@]}")"
+        --output json
+    )
     if [ -n "$FILTER_QUERY" ]; then
         c8y_args+=(--query "$FILTER_QUERY")
     fi
@@ -306,31 +321,21 @@ read_assets() {
         info "No assets found matching query '$FILTER_QUERY'. Use --filter to specify a different query."
         return 0
     fi
-    
-    # Build jq object with id, template properties, and external_id
-    # Start with id field
-    local jq_obj_fields='id: .id, self: .self'
-    # Add template properties (skip 'id' if already added)
-    for prop in "${TEMPLATE_PROPERTIES[@]}"; do
-        if [ "$prop" != "id" ]; then
-            jq_obj_fields+=", ${prop}: .${prop}"
-        fi
-    done
-    
-    # Build jq filter for external_id from template
-    jq_external_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
-    
-    # Add external_id field
-    jq_obj_fields+=", external_id: \"$jq_external_id\""
-    
-    # Generate JSON lines (one JSON object per line)
-    jq_filter="{$jq_obj_fields}"
+
     echo "$page_result" | jq -c "$jq_filter" >> "$JSON_MAP"
+
+    assets_with_errors=$(jq -c 'select(.error == "MissingRequiredField")' "$JSON_MAP" | grep -v '^[[:space:]]*$' )
+    error_count=$(echo "$assets_with_errors" | wc -l | tr -d ' \n\r\t')
+    if [ "$error_count" -gt 0 ]; then
+        echo "$assets_with_errors"
+        error "Found $error_count assets with missing required fields for generating external IDs:"
+        exit 1
+    fi
 
     duplicates=$(jq -r '.external_id' "$JSON_MAP" | sort | uniq -d)
     if [ -n "$duplicates" ]; then
-        error "$duplicates" 
-        error "Duplicate externalIds found. Can not create unique external IDs with the provided template."
+        echo "$duplicates"
+        error "Found duplicate generated external IDs. Can not create unique external IDs with the provided template."
         exit 1
     fi
 
@@ -339,7 +344,7 @@ read_assets() {
     end_time=$(date +%s)
     elapsed=$((end_time - start_time))
     success "Collected $total_collected assets for $C8Y_TENANT (${elapsed}s)"
-    
+
     return 0
 }
 
@@ -356,8 +361,8 @@ process_assets() {
     # tenant and self is added to help with debugging and tracking when running across multiple tenants.
     output_template_fields=(
         "id: if std.objectHas(output, 'id') then output.id else input.value.id"
-        "type: if std.objectHas(output, 'type') then output.type else input.value.type"
-        "c8y_ExternalId: if std.objectHas(output, 'c8y_ExternalId') then output.c8y_ExternalId else input.value.c8y_ExternalId"
+        "type: if std.objectHas(output, 'type') then output.type else std.get(input.value, 'type', null)"
+        "c8y_ExternalId: if std.objectHas(output, 'c8y_ExternalId') then output.c8y_ExternalId else std.get(input.value, 'c8y_ExternalId', null)"
         "c8y_ExternalAsset: if std.objectHas(output, 'c8y_ExternalAsset') then output.c8y_ExternalAsset else null"
         "['self']: if std.objectHas(output, 'self') then output['self'] else input.value['self']"
         "tenant: \"$C8Y_TENANT\""
