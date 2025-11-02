@@ -2,17 +2,14 @@
 
 # Verify that assets with c8y_ExternalId have matching external IDs in the identity API
 
-set -e
+# import shared functions
 
-warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
-# error <colored-part> <plain-part>
-error() {
-    local colored_part="$1"
-    local plain_part="$2"
-    echo -e "\033[1;31mERROR $colored_part\033[0m$plain_part" >&2
-}
-info() { echo -e "INFO  $*" >&2; }
-success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
+# shellcheck source=/dev/null
+source "$(dirname "$0")/../_shared/helper"
+source "$(dirname "$0")/../_shared/constants"
+
+# Stop on unexpected errors
+set -e
 
 help() {
     cat <<EOF
@@ -25,9 +22,13 @@ Description:
     This command checks that all DTM assets with a c8y_ExternalId fragment have a corresponding external ID of type c8y_Asset in the identity API.
 
 Flags:
-        --output <file>       Output file for results (default: asset_external_id_check_results.json)
-    -h, --help                Show this help message
-        --examples            Show usage examples
+        --output                  Output format of result. By default only errors are printed to stderr.
+                                  Set to "json" to output full results to stdout in JSON format.
+    -t, --id-template <template>  Template for generating the value of c8y_ExternalId assigned to the asset
+                                  Use for testing assets for placeholder fields required to generate the external ID.
+                                  Example: "dtm_{id}" or "dtm_{id}_{name}"
+    -h, --help                    Show this help message
+        --examples                Show usage examples
 EOF
     exit 0
 }
@@ -35,19 +36,28 @@ EOF
 examples() {
     cat <<EOF
 Examples:
-    c8y dtm migration externalids-check --workers 10
-    c8y dtm migration externalids-check --output results.json
+    c8y dtm migration externalids-check --workers 10 --progress
+
+    externalids-check --id-template "{field1}_{field2}" --workers 5 --output json 2> /dev/null | \
+        c8y util show --select id,error
 EOF
     exit 0
 }
 
-OUTPUT_FILE="asset_external_id_check_results.json"
 POSITIONAL_ARGS=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --output)
-            OUTPUT_FILE="$2"
+            OUTPUT="$2"
+            shift
+            ;;
+        -t|--id-template)
+            if [ -z "$2" ] || [[ "$2" =~ ^- ]]; then
+                error "Argument --id-template requires a string value." "Use --help for details."
+                exit 1
+            fi
+            ID_TEMPLATE="$2"
             shift
             ;;
         -h|--help)
@@ -69,51 +79,22 @@ ALLOWED_FLAGS=(
   --workers --progress --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --noLog --progress --timeout --workers --verbose
 )
 
-# Parse positional args for allowed global flags
-C8Y_FLAGS=()
-IDX=0
-while [ $IDX -lt ${#POSITIONAL_ARGS[@]} ]; do
-    arg="${POSITIONAL_ARGS[$IDX]}"
-    found=0
-    for flag in "${ALLOWED_FLAGS[@]}"; do
-        if [ "$arg" = "$flag" ]; then
-            found=1
-            C8Y_FLAGS+=("$arg")
-            # If next arg is not another flag, treat as value
-            next_idx=$((IDX+1))
-            next_arg="${POSITIONAL_ARGS[$next_idx]:-}"
-            if [[ ! "$next_arg" =~ ^- ]]; then
-                C8Y_FLAGS+=("$next_arg")
-                IDX=$((IDX+1))
-            fi
-            break
-        fi
-    done
-    if [ $found -eq 0 ]; then
-        error "$arg" " Unknown or unsupported flag"
-        exit 1
-    fi
-    IDX=$((IDX+1))
-done
+# Validate positional args 
+validate_positional_args "$@"
 
-check_prerequisites() {
-    if ! command -v c8y >/dev/null 2>&1; then
-    error "go-c8y-cli (c8y)" " is not installed or not in PATH"
-        exit 1
-    fi
-    if ! command -v jq >/dev/null 2>&1; then
-    error "jq" " is not installed or not in PATH. Please install jq for JSON processing"
-        exit 1
-    fi
-    if ! c8y currentuser get >/dev/null 2>&1; then
-    error "Not authenticated with Cumulocity." " Please run 'set-session' first"
-        exit 1
-    fi
-}
-
+# Fail if prerequisites are not met
 check_prerequisites
 
-assets=$(c8y inventory find --fragmentType "c8y_IsAsset" --includeAll --select id,c8y_ExternalId --output json)
+# Validate and extract template properties
+init_template_properties_array "$ID_TEMPLATE"
+
+# if no properties extracted for a given template, this is an error
+if [ "$ID_TEMPLATE" != "" ] && [ ${#TEMPLATE_PROPERTIES[@]} -eq 0 ]; then
+    error "No properties found in ID template." "The template must include at least one placeholder to generate external IDs from."
+    exit 1
+fi
+
+assets=$(load_all_assets)
 total=$(echo "$assets" | jq -s 'length')
 
 if [ "$total" -eq 0 ]; then
@@ -121,7 +102,7 @@ if [ "$total" -eq 0 ]; then
     exit 0
 fi
 
-info "Found $total assets with c8y_ExternalId fragment. Checking external IDs..."
+info "Found $total assets. Checking external IDs..."
 
 result=$(echo "$assets" | c8y identity list \
     --silentStatusCodes 404 \
@@ -129,7 +110,9 @@ result=$(echo "$assets" | c8y identity list \
     --withError \
     --output json \
     --outputTemplate '
-      if !std.objectHas(input.value, "c8y_ExternalId") || std.toString(input.value.c8y_ExternalId) == "" then
+      if std.objectHas(input.value, "error") then
+        input.value
+      else if !std.objectHas(input.value, "c8y_ExternalId") || std.toString(input.value.c8y_ExternalId) == "" then
         if std.length(output) > 0 then
           [item + input.value + { "error": "MissingExternalIdInAsset" } for item in output]
         else
@@ -148,30 +131,61 @@ result=$(echo "$assets" | c8y identity list \
     "${C8Y_FLAGS[@]}" 
 )
 
-echo "$result" > "$OUTPUT_FILE"
+no_external_id_count=0
+missing_count=0
+mismatch_count=0
+match_count=0
+missing_required_count=0
+total_count=0
 
-no_external_id_count=$(echo "$result" | jq -s '[.[] | select(.error == "MissingExternalIdInAsset")] | length')
-missing_count=$(echo "$result" | jq -s '[.[] | select(.error == "MissingIdentityForAsset")] | length')
-mismatch_count=$(echo "$result" | jq -s '[.[] | select(.error == "ExternalIdMismatch")] | length')
-match_count=$(echo "$result" | jq -s '[.[] | select(.error == "")] | length')
-
-echo "$result" | jq -r '
-  if .error == "MissingExternalIdInAsset" then
-    "\(.id) MissingExternalIdInAsset\t(asset has no c8y_ExternalId, but has \"\(.externalId)\" identity of type c8y_Asset)"
-  elif .error == "MissingIdentityForAsset" then
-    "\(.id) MissingIdentityForAsset\t(expected \"\(.c8y_ExternalId)\" of type c8y_Asset)"
-  elif .error == "ExternalIdMismatch" then
-    "\(.id) ExternalIdMismatch\t\t(expected \"\(.c8y_ExternalId)\", got \"\(.externalId)\")"
-  elif .error != "" then
-    "\(.id) \(.error)"
-  else
-    empty
-  end
-' | while read -r id error rest; do
+# Use process substitution to avoid subshell, so counters persist
+while read -r id error error_msg; do
     if [ -z "$id" ]; then continue; fi
-    id_part="$id $error"
-    rest_part="$rest"
-    error "$id_part" " $rest_part"
-done
 
-success "Completed checking all assets: $match_count match, $no_external_id_count no c8y_ExternalId, $missing_count missing identity, $mismatch_count mismatched. Results in $OUTPUT_FILE"
+    if ! [ -z "$error" ]; then
+        case "$error" in
+            "MissingExternalIdInAsset")
+                no_external_id_count=$((no_external_id_count+1))
+                ;;
+            "MissingIdentityForAsset")
+                missing_count=$((missing_count+1))
+                ;;
+            "ExternalIdMismatch")
+                mismatch_count=$((mismatch_count+1))
+                ;;
+            "MissingRequiredField")
+                missing_required_count=$((missing_required_count+1))
+                ;;
+            "")
+                match_count=$((match_count+1))
+                ;;
+            *)
+                ;;
+        esac
+    fi
+
+    total_count=$((total_count+1))
+    error "$id $error" "$error_msg"
+done < <(echo "$result" | jq -r '
+    if .error == "MissingExternalIdInAsset" then
+        "\(.id) MissingExternalIdInAsset asset has no c8y_ExternalId, but has \"\(.externalId)\" identity of type c8y_Asset"
+    elif .error == "MissingIdentityForAsset" then
+        "\(.id) MissingIdentityForAsset expected \"\(.c8y_ExternalId)\" of type c8y_Asset"
+    elif .error == "ExternalIdMismatch" then
+        "\(.id) ExternalIdMismatch expected \"\(.c8y_ExternalId)\", got \"\(.externalId)\""
+    elif .error == "MissingRequiredField" then
+        "\(.id) MissingRequiredField missing one or more required fields to generate c8y_ExternalId"
+    elif .error != "" and .error != null then
+        "\(.id) \(.error) No error details available"
+    else
+        "\(.id)"
+    end
+')
+
+if [ "$OUTPUT" == "json" ]; then
+    echo "$result" 
+fi
+
+success "Completed checking all assets: $total_count total, $match_count match, $no_external_id_count no c8y_ExternalId, $missing_count missing identity, $mismatch_count mismatched, $missing_required_count missing required fields."
+
+export ALLOWED_FLAGS

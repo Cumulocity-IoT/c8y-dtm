@@ -2,19 +2,14 @@
 
 # Create external IDs for DTM assets based on template with parallel processing
 
+# import shared functions
+
+# shellcheck source=/dev/null
+source "$(dirname "$0")/../_shared/helper"
+source "$(dirname "$0")/../_shared/constants"
+
 # Stop on unexpected errors
 set -e
-
-# Logging helper functions (output to stderr)
-warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
-# error <colored-part> <plain-part>
-error() {
-    local colored_part="$1"
-    local plain_part="$2"
-    echo -e "\033[1;31mERROR $colored_part\033[0m $plain_part" >&2
-}
-info() { echo -e "INFO  $*" >&2; }
-success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
 
 # Help text
 help() {
@@ -93,9 +88,9 @@ EOF
 exit 0
 }
 
-# Default values
-EXTERNAL_ID_FRAGMENT="c8y_ExternalId"
-EXTERNAL_ASSET_FRAGMENT="c8y_ExternalAsset"
+ALLOWED_FLAGS=(
+  --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
+)
 
 ID_TEMPLATE=""
 EXTERNAL_ASSET=""
@@ -164,106 +159,6 @@ JSON_MAP="$LOG_DIR/dtm-create-externalid-asset-map.json"
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
 
-# List of allowed global/inherited flags for c8y identity/inventory calls (short and long forms)
-ALLOWED_FLAGS=(
-  --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
-)
-
-# Parse positional args for allowed global flags
-C8Y_FLAGS=()
-IDX=0
-while [ $IDX -lt ${#POSITIONAL_ARGS[@]} ]; do
-    arg="${POSITIONAL_ARGS[$IDX]}"
-    if [ -z "$arg" ]; then
-        IDX=$((IDX+1))
-        continue
-    fi
-    found=0
-    for flag in "${ALLOWED_FLAGS[@]}"; do
-        if [ "$arg" = "$flag" ]; then
-            found=1
-            C8Y_FLAGS+=("$arg")
-            # If next arg is not another flag, treat as value
-            next_idx=$((IDX+1))
-            next_arg="${POSITIONAL_ARGS[$next_idx]:-}"
-            if [[ ! "$next_arg" =~ ^- ]]; then
-                C8Y_FLAGS+=("$next_arg")
-                IDX=$((IDX+1))
-            fi
-            break
-        fi
-    done
-    if [ $found -eq 0 ]; then
-        error "Unknown or unsupported flag: $arg"
-        exit 1
-    fi
-    IDX=$((IDX+1))
-done
-
-# Function to check prerequisites
-check_prerequisites() {
-    if ! command -v c8y >/dev/null 2>&1; then
-        error "go-c8y-cli (c8y) is not installed or not in PATH"
-        exit 1
-    fi
-
-    if ! command -v jq >/dev/null 2>&1; then
-        error "jq is not installed or not in PATH. Please install jq for JSON processing"
-        exit 1
-    fi
-
-    # Check if authenticated
-    if ! c8y currentuser get >/dev/null 2>&1; then
-        error "Not authenticated with Cumulocity. Please run 'set-session' first"
-        exit 1
-    fi
-}
-
-# Function to generate external ID from template
-generate_external_id() {
-    local asset_json="$1"
-    local template="$2"
-    local result="$template"
-    local placeholders
-    # Use TEMPLATE_PROPERTIES instead of extracting placeholders again
-    for property_path in "${TEMPLATE_PROPERTIES[@]}"; do
-        local placeholder="{$property_path}"
-        jq_filter=".$property_path"
-
-        local value=""
-        # Prefer raw string values; otherwise stringify the JSON value
-        value=$(echo "$asset_json" | jq -r "if ($jq_filter | type) == \"string\" then $jq_filter else ($jq_filter | tostring) end" 2>/dev/null || echo "")
-        if [ "$value" = "null" ] || [ -z "$value" ]; then
-            error "Missing value for property path '$property_path'"
-            return 1
-        fi
-        result="${result//$placeholder/$value}"
-    done
-    echo "$result"
-}
-
-# Function to extract template properties
-extract_template_properties() {
-    local template="$1"
-    local properties=()
-    local placeholders
-    placeholders=$(echo "$template" | grep -oE '\{[^}]+\}' | sort -u)
-    while IFS= read -r placeholder; do
-        if [ -n "$placeholder" ]; then
-            # remove curly braces from placeholder
-            local property_path="${placeholder//[\{\}]/}"
-            properties+=("$property_path")
-        fi
-    done <<< "$placeholders"
-    echo "${properties[@]}"
-}
-
-join() {
-  local IFS="$1"
-  shift
-  echo "$*"
-}
-
 ## Validate arguments
 
 # Check if ID template is provided
@@ -278,51 +173,41 @@ if [ -z "$EXTERNAL_ASSET" ] || ! echo "$EXTERNAL_ASSET" | jq empty; then
     exit 1
 fi
 
-# Check prerequisites
+validate_positional_args "$@"
+
 check_prerequisites
 
-# Extract properties from template
-TEMPLATE_PROPERTIES=()
-while IFS= read -r prop; do
-    TEMPLATE_PROPERTIES+=("$prop")
-done < <(extract_template_properties "$ID_TEMPLATE")
+# Validate and extract template properties
+init_template_properties_array "$ID_TEMPLATE"
+
+# if no properties extracted, warn user
+if [ ${#TEMPLATE_PROPERTIES[@]} -eq 0 ]; then
+    error "No properties found in ID template. The template must include at least one placeholder to generate external IDs from."
+    exit 1
+fi
 
 # Function to read assets with pagination and generate JSON lines (NDJSON)
 read_assets() {
     # Initialize intermediate JSON file (clear it)
     true > "$JSON_MAP"
 
+    # Read all assets and generate JSON map with external IDs
     local start_time end_time elapsed
     start_time=$(date +%s)
 
-    local select_fields=("id" "self")
-    # Add template properties to select_fields (only unique ones)
-    for prop in "${TEMPLATE_PROPERTIES[@]}"; do
-        if [[ ! " ${select_fields[*]} " == *" ${prop} "* ]]; then
-            select_fields+=("$prop")
-        fi
-    done
+    page_result=$(load_all_assets)
+    echo "$page_result" >> "$JSON_MAP"
 
-    jq_external_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
-    jq_filter="{ $(join_jq_with_error_check "${select_fields[@]}"), external_id:\"$jq_external_id\", tenant: \"$C8Y_TENANT\" }"
+    total_collected=$(wc -l < "$JSON_MAP" | tr -d ' \n\r\t')
+    end_time=$(date +%s)
+    elapsed=$((end_time - start_time))
 
-    local c8y_args=(inventory find 
-        --includeAll 
-        --fragmentType "c8y_IsAsset" 
-        --select "$(join ',' "${select_fields[@]}")"
-        --output json
-    )
-    if [ -n "$FILTER_QUERY" ]; then
-        c8y_args+=(--query "$FILTER_QUERY")
-    fi
-    page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
-
-    if [ -z "$page_result" ] || [ "$page_result" = "null" ] || [ "$page_result" = "[]" ]; then
-        info "No assets found matching query '$FILTER_QUERY'. Use --filter to specify a different query."
+    if [ -z "$page_result" ] || [ "$page_result" = "null" ] || [ "$page_result" = "[]" ] || [ "$total_collected" -eq 0 ]; then
+        info "No assets found matching query '$FILTER_QUERY' in $elapsed seconds. Use --filter to specify a different query or use empty to match all assets."
         return 0
     fi
 
-    echo "$page_result" | jq -c "$jq_filter" >> "$JSON_MAP"
+    success "Collected $total_collected assets for $C8Y_TENANT (${elapsed}s)"
 
     assets_with_errors=$(jq -c 'select(.error == "MissingRequiredField")' "$JSON_MAP" | grep -v '^[[:space:]]*$' )
     error_count=$(echo "$assets_with_errors" | wc -l | tr -d ' \n\r\t')
@@ -338,12 +223,6 @@ read_assets() {
         error "Found duplicate generated external IDs. Can not create unique external IDs with the provided template."
         exit 1
     fi
-
-    local total_collected
-    total_collected=$(wc -l < "$JSON_MAP" | tr -d ' \n\r\t')
-    end_time=$(date +%s)
-    elapsed=$((end_time - start_time))
-    success "Collected $total_collected assets for $C8Y_TENANT (${elapsed}s)"
 
     return 0
 }
@@ -438,10 +317,10 @@ process_assets() {
 }
 
 # Export function and variables for parallel processing
-export -f process_assets generate_external_id warn error info success
-export ID_TEMPLATE EXTERNAL_ASSET EXTERNAL_ID_FRAGMENT FILTER_QUERY
+export -f process_assets 
+export ID_TEMPLATE EXTERNAL_ASSET EXTERNAL_ID_FRAGMENT FILTER_QUERY ALLOWED_FLAGS 
 
-# Read all assets and generate JSON map with external IDs
+# Read assets and generate JSON map
 read_assets
 
 # Process assets and get the return code (failure count)
