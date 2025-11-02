@@ -113,19 +113,6 @@ join() {
     echo
 }
 
-join_jq_with_error_check() {
-    local arr=("$@")
-    local result=()
-    local error_checks=()
-    for field in "${arr[@]}"; do
-        result+=("\"$field\": .[\"$field\"]")
-        error_checks+=(".[\"$field\"] == null")
-    done
-    local error_condition
-    error_condition=$(join ' or ' "${error_checks[@]}")
-    local error_expr="if $error_condition then \"MissingRequiredField\" else null end"
-    echo "$(join ', ' "${result[@]}"), \"error\": ($error_expr)"
-}
 
 load_all_assets() {
     local select_fields=("id" "self" "c8y_ExternalId")
@@ -166,8 +153,6 @@ load_all_assets() {
     )
     )'
    
-    warn "jq_filter: $jq_filter" ""
-   
     local c8y_args=(inventory find 
         --includeAll 
         --fragmentType "c8y_IsAsset" 
@@ -183,7 +168,7 @@ load_all_assets() {
 }
 
 # export functions and variables to be used in subprocesses if needed
-export -f check_prerequisites join join_jq_with_error_check 
+export -f check_prerequisites join 
 export -f extract_template_properties init_template_properties_array
 export -f validate_positional_args
 export -f warn error info success

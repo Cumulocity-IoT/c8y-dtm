@@ -36,7 +36,7 @@ Errors:
     ExternalIdMismatch            Asset's c8y_ExternalId does not match external ID in Identity API
     MissingRequiredField          Asset is missing one or more required fields to generate c8y_ExternalId
     ExternalIdTemplateMismatch    Asset's c8y_ExternalId does not match expected value based on provided template
-    
+
 EOF
     exit 0
 }
@@ -83,7 +83,7 @@ done
 set -- "${POSITIONAL_ARGS[@]}"
 
 # List of allowed global/inherited flags for c8y identity list (short and long forms)
-ALLOWED_FLAGS=(
+export ALLOWED_FLAGS=(
   --workers --progress --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --noLog --progress --timeout --workers --verbose
 )
 
@@ -106,7 +106,7 @@ assets=$(load_all_assets)
 total=$(echo "$assets" | jq -s 'length')
 
 if [ "$total" -eq 0 ]; then
-    info "No assets found with c8y_ExternalId fragment. Exiting."
+    info "No assets found for query ${FILTER_QUERY}. Exiting."
     exit 0
 fi
 
