@@ -29,6 +29,14 @@ Flags:
                                   Example: "dtm_{id}" or "dtm_{id}_{name}"
     -h, --help                    Show this help message
         --examples                Show usage examples
+
+Errors:
+    MissingExternalIdInAsset      Asset has no c8y_ExternalId, but has identity of type c8y_Asset
+    MissingIdentityForAsset       Asset has c8y_ExternalId, but no identity of type c8y_Asset
+    ExternalIdMismatch            Asset's c8y_ExternalId does not match external ID in Identity API
+    MissingRequiredField          Asset is missing one or more required fields to generate c8y_ExternalId
+    ExternalIdTemplateMismatch    Asset's c8y_ExternalId does not match expected value based on provided template
+    
 EOF
     exit 0
 }
@@ -131,11 +139,7 @@ result=$(echo "$assets" | c8y identity list \
     "${C8Y_FLAGS[@]}" 
 )
 
-no_external_id_count=0
-missing_count=0
-mismatch_count=0
-match_count=0
-missing_required_count=0
+error_count=0
 total_count=0
 
 # Use process substitution to avoid subshell, so counters persist
@@ -143,25 +147,7 @@ while read -r id error error_msg; do
     if [ -z "$id" ]; then continue; fi
 
     if ! [ -z "$error" ]; then
-        case "$error" in
-            "MissingExternalIdInAsset")
-                no_external_id_count=$((no_external_id_count+1))
-                ;;
-            "MissingIdentityForAsset")
-                missing_count=$((missing_count+1))
-                ;;
-            "ExternalIdMismatch")
-                mismatch_count=$((mismatch_count+1))
-                ;;
-            "MissingRequiredField")
-                missing_required_count=$((missing_required_count+1))
-                ;;
-            "")
-                match_count=$((match_count+1))
-                ;;
-            *)
-                ;;
-        esac
+        error_count=$((error_count+1))
     fi
 
     total_count=$((total_count+1))
@@ -175,6 +161,8 @@ done < <(echo "$result" | jq -r '
         "\(.id) ExternalIdMismatch expected \"\(.c8y_ExternalId)\", got \"\(.externalId)\""
     elif .error == "MissingRequiredField" then
         "\(.id) MissingRequiredField missing one or more required fields to generate c8y_ExternalId"
+    elif .error == "ExternalIdTemplateMismatch" then
+        "\(.id) ExternalIdTemplateMismatch c8y_ExternalId \"\(.c8y_ExternalId)\" does not match expected \"\(.external_id)\""
     elif .error != "" and .error != null then
         "\(.id) \(.error) No error details available"
     else
@@ -186,6 +174,4 @@ if [ "$OUTPUT" == "json" ]; then
     echo "$result" 
 fi
 
-success "Completed checking all assets: $total_count total, $match_count match, $no_external_id_count no c8y_ExternalId, $missing_count missing identity, $mismatch_count mismatched, $missing_required_count missing required fields."
-
-export ALLOWED_FLAGS
+success "Completed checking all assets: $total_count total, $error_count errors."

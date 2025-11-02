@@ -144,18 +144,27 @@ load_all_assets() {
     done
     local error_condition
     error_condition=$(join ' or ' "${error_checks[@]}")
-
-    jq_filter="(
-        . as \$in
+    local object_fields
+    object_fields=$(for f in "${select_fields[@]}"; do echo -n "$f: .[\"$f\"], "; done)
+    
+    # shellcheck disable=SC2016
+    jq_filter='(
+    . as $in
+    | (
+        ('"$error_condition"') as $missing
         | (
-            (${error_condition}) as \$missing
+            (if $missing then "MissingRequiredField"
+            elif ($in.c8y_ExternalId != null and "'"$jq_external_id"'" != $in.c8y_ExternalId) then "ExternalIdTemplateMismatch"
+            else null end) as $error_val
             | {
-                $(join_jq_with_error_check "${select_fields[@]}"),
-                external_id: (if \$missing then null else \"$jq_external_id\" end),
-                tenant: \"$C8Y_TENANT\"
+                '"$object_fields"'
+                external_id: (if $missing then null else "'"$jq_external_id"'" end),
+                error: $error_val,
+                tenant: "'"$C8Y_TENANT"'"
             }
         )
-    )"
+    )
+    )'
    
     warn "jq_filter: $jq_filter" ""
    
