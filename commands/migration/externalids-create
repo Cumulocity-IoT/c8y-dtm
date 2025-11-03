@@ -203,24 +203,29 @@ read_assets() {
     elapsed=$((end_time - start_time))
 
     if [ -z "$page_result" ] || [ "$page_result" = "null" ] || [ "$page_result" = "[]" ] || [ "$total_collected" -eq 0 ]; then
-        info "No assets found matching query '$FILTER_QUERY' in $elapsed seconds. Use --filter to specify a different query or use empty to match all assets."
+        info "No assets found matching query '$FILTER_QUERY'. Use --filter to specify a different query or use empty to match all assets."
         return 0
     fi
 
     success "Collected $total_collected assets for $C8Y_TENANT (${elapsed}s)"
 
-    assets_with_errors=$(jq -c 'select(.error == "MissingRequiredField")' "$JSON_MAP" | grep -v '^[[:space:]]*$' )
+    assets_with_errors=$(echo "$page_result" | jq -c 'select(.error == "MissingRequiredField")')
     error_count=$(echo "$assets_with_errors" | wc -l | tr -d ' \n\r\t')
+
     if [ "$error_count" -gt 0 ]; then
-        echo "$assets_with_errors"
-        error "Found $error_count assets with missing required fields for generating external IDs:"
-        exit 1
+        error "Found $error_count assets with missing required fields for generating external IDs."
     fi
 
-    duplicates=$(jq -r '.template_id' "$JSON_MAP" | sort | uniq -d)
+    duplicates=$(get_duplicate_external_ids "$page_result" )
+    duplicate_count=$(echo "$duplicates" | wc -l | tr -d ' \n\r\t')
     if [ -n "$duplicates" ]; then
-        echo "$duplicates"
         error "Found duplicate generated external IDs. Can not create unique external IDs with the provided template."
+    fi
+
+    if ! [ "$error_count" -eq 0 ] || ! [ "$duplicate_count" -eq 0 ]; then
+        error "Aborting due to errors in asset data. Please fix the issues and try again."
+        cat <(echo "$assets_with_errors") <(echo "$duplicates")
+
         exit 1
     fi
 

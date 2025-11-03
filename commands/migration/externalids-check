@@ -112,7 +112,8 @@ fi
 
 FILTER_QUERY=""
 assets=$(load_all_assets)
-total=$(echo "$assets" | jq -s 'length')
+
+total=$(echo "$assets" | wc -l | tr -d ' \n\r\t')
 
 if [ "$total" -eq 0 ]; then
     info "No assets found for query ${FILTER_QUERY}. Exiting."

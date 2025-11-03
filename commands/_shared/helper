@@ -102,17 +102,6 @@ init_template_properties_array() {
     done < <(extract_template_properties "$template")
 }
 
-# join() {
-#     local IFS="$1"
-#     shift
-#     printf '%s' "$1"
-#     shift
-#     for arg in "$@"; do
-#         printf '%s%s' "$IFS" "$arg"
-#     done
-#     echo
-# }
-
 join() {
     local sep="$1"
     shift
@@ -131,12 +120,37 @@ join() {
 
 load_all_assets() {
     local select_fields=("id" "self" "c8y_ExternalId")
+    local required_fields=()
+
     # Add template properties to select_fields (only unique ones)
     for prop in "${TEMPLATE_PROPERTIES[@]}"; do
         if [[ ! " ${select_fields[*]} " == *" ${prop} "* ]]; then
             select_fields+=("$prop")
         fi
+        required_fields+=("$prop")
     done
+
+    local error_checks=()
+    for field in "${required_fields[@]}"; do
+        error_checks+=(".[\"$field\"] == null")
+    done
+
+    local error_condition
+    error_condition=$(join ' or ' "${error_checks[@]}")
+
+    local jq_template_id
+    jq_template_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
+
+    # shellcheck disable=SC2016
+    jq_filter='
+        . as $in
+        | ('"$error_condition"') as $missing
+        | (if $missing then "MissingRequiredField" else null end) as $error_val
+        | $in + {
+            error: $error_val,
+            template_id: (if $missing then null else "'"$jq_template_id"'" end),
+        }
+    '
 
     local c8y_args=(inventory find 
         --includeAll 
@@ -147,13 +161,42 @@ load_all_assets() {
     if [ -n "$FILTER_QUERY" ]; then
         c8y_args+=(--query "$FILTER_QUERY")
     fi
-    page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
+    page_result=$(c8y "${c8y_args[@]}" 2>/dev/null | jq -c "$jq_filter")
 
     echo "$page_result"
 }
 
+get_duplicate_external_ids() {
+    local json_map
+    if [ -n "$1" ]; then
+        json_map="$1"
+    else
+        # read from stdin
+        json_map="$(cat)"
+    fi
+    echo "$json_map" | jq -c -s '
+        . as $all
+        | ($all | map(.c8y_ExternalId) | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_extids
+        | ($all | map(.template_id)    | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_tmplids
+        | $all
+        | map(
+            . as $item
+            | ($item.c8y_ExternalId // empty) as $eid
+            | ($item.template_id // empty) as $tid
+            | if (($eid | type == "string") and ($dup_extids | index($eid))) then
+                    . + {error: "DuplicateExternalId"}
+                elif (($tid | type == "string") and ($dup_tmplids | index($tid))) then
+                    . + {error: "DuplicateTemplateId"}
+                else
+                    empty
+                end
+            )
+        | .
+        []'
+}
+
 # export functions and variables to be used in subprocesses if needed
-export -f check_prerequisites join 
+export -f check_prerequisites join get_duplicate_external_ids
 export -f extract_template_properties init_template_properties_array
 export -f validate_positional_args
 export -f warn error info success
