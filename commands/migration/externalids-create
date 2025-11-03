@@ -217,7 +217,7 @@ read_assets() {
         exit 1
     fi
 
-    duplicates=$(jq -r '.external_id' "$JSON_MAP" | sort | uniq -d)
+    duplicates=$(jq -r '.template_id' "$JSON_MAP" | sort | uniq -d)
     if [ -n "$duplicates" ]; then
         echo "$duplicates"
         error "Found duplicate generated external IDs. Can not create unique external IDs with the provided template."
@@ -259,7 +259,7 @@ process_assets() {
 
     # Create input template for updating assets, used in both inventory update and asset upsert body
     template_fields=(
-        "${EXTERNAL_ID_FRAGMENT}: input.value.external_id"
+        "${EXTERNAL_ID_FRAGMENT}: input.value.template_id"
     )
     if [ ! -z "$EXTERNAL_ASSET" ]; then
         template_fields+=(
@@ -297,7 +297,7 @@ process_assets() {
         cat "$JSON_MAP" | \
             c8y identity create \
                 --type "c8y_Asset" \
-                --template '{ device: input.value.id, externalId: input.value.external_id }' \
+                --template '{ device: input.value.id, externalId: input.value.template_id }' \
                 --force \
                 "${C8Y_FLAGS[@]}" \
                 1>> "$LOG_DIR/dtm-create-externalid-identity.log"

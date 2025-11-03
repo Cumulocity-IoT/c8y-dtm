@@ -22,8 +22,9 @@ Description:
     This command checks that all DTM assets with a c8y_ExternalId fragment have a corresponding external ID of type c8y_Asset in the identity API.
 
 Flags:
-        --output                  Output format of result. By default only errors are printed to stderr.
+    -o, --output                  Output format of result. By default only errors are printed to stderr.
                                   Set to "json" to output full results to stdout in JSON format.
+    -e, --error-only              Output only assets with errors
     -t, --id-template <template>  Template for generating the value of c8y_ExternalId assigned to the asset
                                   Use for testing assets for placeholder fields required to generate the external ID.
                                   Example: "dtm_{id}" or "dtm_{id}_{name}"
@@ -32,10 +33,13 @@ Flags:
 
 Errors:
     MissingExternalIdInAsset      Asset has no c8y_ExternalId, but has identity of type c8y_Asset
+    MissingExternalIdAndIdentity  Asset has no c8y_ExternalId and no identity of type c8y_Asset
     MissingIdentityForAsset       Asset has c8y_ExternalId, but no identity of type c8y_Asset
     ExternalIdMismatch            Asset's c8y_ExternalId does not match external ID in Identity API
     MissingRequiredField          Asset is missing one or more required fields to generate c8y_ExternalId
-    ExternalIdTemplateMismatch    Asset's c8y_ExternalId does not match expected value based on provided template
+    ExternalIdTemplateIdMismatch  Asset's c8y_ExternalId does not match expected value based on provided template
+    DuplicateExternalId           Assets that share the same c8y_ExternalId
+    DuplicateTemplateId           Assets that have would have the same c8y_ExternalId based on the provided template
 
 EOF
     exit 0
@@ -53,10 +57,11 @@ EOF
 }
 
 POSITIONAL_ARGS=()
+ERROR_ONLY=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --output)
+        -o|--output)
             OUTPUT="$2"
             shift
             ;;
@@ -67,6 +72,9 @@ while [ $# -gt 0 ]; do
             fi
             ID_TEMPLATE="$2"
             shift
+            ;;
+        -e|--error-only)
+            ERROR_ONLY="true"
             ;;
         -h|--help)
             help
@@ -102,6 +110,7 @@ if [ "$ID_TEMPLATE" != "" ] && [ ${#TEMPLATE_PROPERTIES[@]} -eq 0 ]; then
     exit 1
 fi
 
+FILTER_QUERY=""
 assets=$(load_all_assets)
 total=$(echo "$assets" | jq -s 'length')
 
@@ -112,32 +121,82 @@ fi
 
 info "Found $total assets. Checking external IDs..."
 
+template_id_format=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/%\(\1\)s/g')
+
+template_id_values=()
+for prop in "${TEMPLATE_PROPERTIES[@]}"; do
+    template_id_values+=("\"$prop\": std.get(input.value, \"$prop\", null)")
+done
+template_id_values_block=$(join ", " "${template_id_values[@]}")
+
+template_id_condition=()
+for prop in "${TEMPLATE_PROPERTIES[@]}"; do
+    template_id_condition+=("std.get(input.value, \"$prop\", null) != null")
+done
+template_id_condition_block=$(join " && " "${template_id_condition[@]}")
+
+output_template='
+    local hasValue(obj, field) = std.objectHas(obj, field) && obj[field] != null && std.toString(obj[field]) != "";
+    if output == null || (std.isArray(output) && std.length(output) == 0) then
+        if !hasValue(input.value, "c8y_ExternalId") then
+            [input.value + {externalId: null, "error": "MissingExternalIdAndIdentity"}]
+        else
+            [input.value + {externalId: null, "error": "MissingIdentityForAsset"}]
+    else
+        local _out = if std.isArray(output) then output else [ output ];
+        local template_id_values = {'"$template_id_values_block"'};
+        local template_id = if '"$template_id_condition_block"' then "'"$template_id_format"'" % template_id_values else null;
+        [input.value + {
+            type: std.get(input.value, "type", null),
+            template_id: template_id,
+            externalId: std.get(item, "externalId", null),
+            externalId_type: std.get(item, "type", null),
+            "error":
+                if hasValue(input.value, "error") then
+                    std.get(input.value, "error", null)
+                else if template_id == null then
+                    "MissingRequiredField"
+                else if !hasValue(input.value, "c8y_ExternalId") then
+                    "MissingExternalIdInAsset"
+                else if !hasValue(item, "externalId") then
+                    "MissingIdentityForAsset"
+                else if std.toString(item.externalId) != std.toString(input.value.c8y_ExternalId) then
+                    "ExternalIdMismatch"
+                else if std.toString(input.value.c8y_ExternalId) != std.toString(template_id) then
+                    "ExternalIdTemplateIdMismatch"
+                else
+                    null
+        } for item in _out]
+'
+
 result=$(echo "$assets" | c8y identity list \
     --silentStatusCodes 404 \
     --silentExit \
     --withError \
     --output json \
-    --outputTemplate '
-      if std.objectHas(input.value, "error") then
-        input.value
-      else if !std.objectHas(input.value, "c8y_ExternalId") || std.toString(input.value.c8y_ExternalId) == "" then
-        if std.length(output) > 0 then
-          [item + input.value + { "error": "MissingExternalIdInAsset" } for item in output]
-        else
-          [output + {type: "", externalId: "", "error": "MissingExternalIdInAsset"}]
-      else if std.length(output) > 0 then
-        [input.value + {
-          type: if std.objectHas(item, "type") then std.toString(item.type) else "",
-          externalId: if std.objectHas(item, "externalId") then std.toString(item.externalId) else "",
-          "error": if std.objectHas(item, "externalId") then
-                      if std.toString(item.externalId) != input.value.c8y_ExternalId then "ExternalIdMismatch" else ""
-                   else ""
-        } for item in output]
-      else
-        [input.value + {type: "", externalId: "", "error": "MissingIdentityForAsset"}]
-    ' \
+    --outputTemplate "$output_template" \
     "${C8Y_FLAGS[@]}" 
 )
+
+duplicates=$(echo "$result" | jq -c -s '
+  . as $all
+  | ($all | map(.c8y_ExternalId) | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_extids
+  | ($all | map(.template_id)    | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_tmplids
+  | $all
+  | map(
+      . as $item
+      | ($item.c8y_ExternalId // empty) as $eid
+      | ($item.template_id // empty) as $tid
+      | if (($eid | type == "string") and ($dup_extids | index($eid))) then
+            . + {error: "DuplicateExternalId"}
+        elif (($tid | type == "string") and ($dup_tmplids | index($tid))) then
+            . + {error: "DuplicateTemplateId"}
+        else
+            empty
+        end
+    )
+ | .
+[]')
 
 error_count=0
 total_count=0
@@ -146,23 +205,34 @@ total_count=0
 while read -r id error error_msg; do
     if [ -z "$id" ]; then continue; fi
 
-    if ! [ -z "$error" ]; then
-        error_count=$((error_count+1))
+    if ! [ "$error" == "DuplicateTemplateId" ] && ! [ "$error" == "DuplicateExternalId" ]; then
+        total_count=$((total_count+1))
     fi
 
-    total_count=$((total_count+1))
+    if ! [ -z "$error" ]; then
+        error_count=$((error_count+1))
+    else 
+        continue
+    fi
+
     error "$id $error" "$error_msg"
-done < <(echo "$result" | jq -r '
+done < <(cat <(echo "$result") <(echo "$duplicates") | jq -r '
     if .error == "MissingExternalIdInAsset" then
-        "\(.id) MissingExternalIdInAsset asset has no c8y_ExternalId, but has \"\(.externalId)\" identity of type c8y_Asset"
+        "\(.id) MissingExternalIdInAsset asset has no c8y_ExternalId, but c8y_Asset identity with externalId \"\(.externalId)\""
+    elif .error == "MissingExternalIdAndIdentity" then
+        "\(.id) MissingExternalIdAndIdentity asset has no c8y_ExternalId and no c8y_Asset identity"
     elif .error == "MissingIdentityForAsset" then
-        "\(.id) MissingIdentityForAsset expected \"\(.c8y_ExternalId)\" of type c8y_Asset"
+        "\(.id) MissingIdentityForAsset asset has c8y_ExternalId \"\(.c8y_ExternalId)\", but no c8y_Asset identity"
     elif .error == "ExternalIdMismatch" then
-        "\(.id) ExternalIdMismatch expected \"\(.c8y_ExternalId)\", got \"\(.externalId)\""
+        "\(.id) ExternalIdMismatch asset c8y_ExternalID \"\(.c8y_ExternalId)\" and c8y_Asset identity \"\(.externalId)\" do not match"
     elif .error == "MissingRequiredField" then
-        "\(.id) MissingRequiredField missing one or more required fields to generate c8y_ExternalId"
-    elif .error == "ExternalIdTemplateMismatch" then
-        "\(.id) ExternalIdTemplateMismatch c8y_ExternalId \"\(.c8y_ExternalId)\" does not match expected \"\(.external_id)\""
+        "\(.id) MissingRequiredField asset is missing one or more required fields to generate c8y_ExternalId from template '"$ID_TEMPLATE"'"
+    elif .error == "ExternalIdTemplateIdMismatch" then
+        "\(.id) ExternalIdTemplateIdMismatch c8y_ExternalId \"\(.c8y_ExternalId)\" does not match expected \"\(.template_id)\""
+    elif .error == "DuplicateExternalId" then
+        "\(.id) DuplicateExternalId asset shares c8y_ExternalId \"\(.c8y_ExternalId)\" with another asset"
+    elif .error == "DuplicateTemplateId" then
+        "\(.id) DuplicateTemplateId asset has same generated c8y_ExternalId based on template '"$ID_TEMPLATE"' as another asset"
     elif .error != "" and .error != null then
         "\(.id) \(.error) No error details available"
     else
@@ -171,7 +241,11 @@ done < <(echo "$result" | jq -r '
 ')
 
 if [ "$OUTPUT" == "json" ]; then
-    echo "$result" 
+    if [ "$ERROR_ONLY" == "true" ]; then
+        cat <(echo "$result" | jq -c '. | select(.error != null)') <(echo "$duplicates")
+    else
+        echo "$result"
+    fi
 fi
 
 success "Completed checking all assets: $total_count total, $error_count errors."

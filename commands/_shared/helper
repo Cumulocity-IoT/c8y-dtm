@@ -102,17 +102,32 @@ init_template_properties_array() {
     done < <(extract_template_properties "$template")
 }
 
-join() {
-    local IFS="$1"
-    shift
-    printf '%s' "$1"
-    shift
-    for arg in "$@"; do
-        printf '%s%s' "$IFS" "$arg"
-    done
-    echo
-}
+# join() {
+#     local IFS="$1"
+#     shift
+#     printf '%s' "$1"
+#     shift
+#     for arg in "$@"; do
+#         printf '%s%s' "$IFS" "$arg"
+#     done
+#     echo
+# }
 
+join() {
+    local sep="$1"
+    shift
+    local result=""
+    local first=1
+    for item in "$@"; do
+        if [ $first -eq 1 ]; then
+            result="$item"
+            first=0
+        else
+            result="$result$sep$item"
+        fi
+    done
+    echo "$result"
+}
 
 load_all_assets() {
     local select_fields=("id" "self" "c8y_ExternalId")
@@ -123,36 +138,6 @@ load_all_assets() {
         fi
     done
 
-    jq_external_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
-
-    local error_checks=()
-    for field in "${select_fields[@]}"; do
-        error_checks+=(".[\"$field\"] == null")
-    done
-    local error_condition
-    error_condition=$(join ' or ' "${error_checks[@]}")
-    local object_fields
-    object_fields=$(for f in "${select_fields[@]}"; do echo -n "$f: .[\"$f\"], "; done)
-    
-    # shellcheck disable=SC2016
-    jq_filter='(
-    . as $in
-    | (
-        ('"$error_condition"') as $missing
-        | (
-            (if $missing then "MissingRequiredField"
-            elif ($in.c8y_ExternalId != null and "'"$jq_external_id"'" != $in.c8y_ExternalId) then "ExternalIdTemplateMismatch"
-            else null end) as $error_val
-            | {
-                '"$object_fields"'
-                external_id: (if $missing then null else "'"$jq_external_id"'" end),
-                error: $error_val,
-                tenant: "'"$C8Y_TENANT"'"
-            }
-        )
-    )
-    )'
-   
     local c8y_args=(inventory find 
         --includeAll 
         --fragmentType "c8y_IsAsset" 
@@ -162,7 +147,7 @@ load_all_assets() {
     if [ -n "$FILTER_QUERY" ]; then
         c8y_args+=(--query "$FILTER_QUERY")
     fi
-    page_result=$(c8y "${c8y_args[@]}" 2>/dev/null | jq -c "$jq_filter")
+    page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
 
     echo "$page_result"
 }
