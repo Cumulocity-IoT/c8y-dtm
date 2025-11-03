@@ -38,6 +38,7 @@ Errors:
     ExternalIdMismatch            Asset's c8y_ExternalId does not match external ID in Identity API
     MissingRequiredField          Asset is missing one or more required fields to generate c8y_ExternalId
     ExternalIdTemplateIdMismatch  Asset's c8y_ExternalId does not match expected value based on provided template
+    TooManyIdentities             Asset has multiple identities of type c8y_Asset
     DuplicateExternalId           Assets that share the same c8y_ExternalId
     DuplicateTemplateId           Assets that have would have the same c8y_ExternalId based on the provided template
 
@@ -148,25 +149,33 @@ output_template='
             [input.value + common + { "error": "MissingIdentityForAsset", externalId: null }]
     else
         local _out = if std.isArray(output) then output else [ output ];
-        [input.value + common + {
-            externalId: std.get(item, "externalId", null),
-            externalId_type: std.get(item, "type", null),
-            "error":
-                if hasValue(input.value, "error") then
-                    std.get(input.value, "error", null)
-                else if template_id == null then
-                    "MissingRequiredField"
-                else if !hasValue(input.value, "c8y_ExternalId") then
-                    "MissingExternalIdInAsset"
-                else if !hasValue(item, "externalId") then
-                    "MissingIdentityForAsset"
-                else if std.toString(item.externalId) != std.toString(input.value.c8y_ExternalId) then
-                    "ExternalIdMismatch"
-                else if std.toString(input.value.c8y_ExternalId) != std.toString(template_id) then
-                    "ExternalIdTemplateIdMismatch"
-                else
-                    null
-        } for item in _out]
+        if std.length(_out) > 1 then
+            [input.value + common + {
+                "error": "TooManyIdentities", 
+                externalId_type: std.get(_out[0], "type", null),
+                template_id: std.get(input.value, "template_id", null),
+                externalIds: [ obj.externalId for obj in _out if std.objectHas(obj, "externalId") ],
+            }]
+        else
+            [input.value + common + {
+                externalId: std.get(item, "externalId", null),
+                externalId_type: std.get(item, "type", null),
+                "error":
+                    if hasValue(input.value, "error") then
+                        std.get(input.value, "error", null)
+                    else if template_id == null then
+                        "MissingRequiredField"
+                    else if !hasValue(input.value, "c8y_ExternalId") then
+                        "MissingExternalIdInAsset"
+                    else if !hasValue(item, "externalId") then
+                        "MissingIdentityForAsset"
+                    else if std.toString(item.externalId) != std.toString(input.value.c8y_ExternalId) then
+                        "ExternalIdMismatch"
+                    else if std.toString(input.value.c8y_ExternalId) != std.toString(template_id) then
+                        "ExternalIdTemplateIdMismatch"
+                    else
+                        null
+            } for item in _out]
 '
 
 result=$(echo "$assets" | c8y identity list \
@@ -233,6 +242,8 @@ done < <(cat <(echo "$result") <(echo "$duplicates") | jq -r '
         "\(.id) DuplicateExternalId asset shares c8y_ExternalId \"\(.c8y_ExternalId)\" with another asset"
     elif .error == "DuplicateTemplateId" then
         "\(.id) DuplicateTemplateId asset has same generated c8y_ExternalId based on template '"$ID_TEMPLATE"' as another asset"
+    elif .error == "TooManyIdentities" then
+        "\(.id) TooManyIdentities asset has more than one c8y_Asset identity \(.externalIds))"
     elif .error != "" and .error != null then
         "\(.id) \(.error) No error details available"
     else
