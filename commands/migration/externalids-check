@@ -59,6 +59,7 @@ EOF
 
 POSITIONAL_ARGS=()
 ERROR_ONLY=""
+OUTPUT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -223,7 +224,7 @@ done < <(cat <(echo "$result") <(echo "$duplicates") | jq -r '
     elif .error == "DuplicateExternalId" then
         "\(.id) DuplicateExternalId asset shares c8y_ExternalId \"\(.c8y_ExternalId)\" with another asset"
     elif .error == "DuplicateTemplateId" then
-        "\(.id) DuplicateTemplateId asset has same generated c8y_ExternalId \"\(.template_id)\" from template "'"$ID_TEMPLATE"'" as another asset"
+        "\(.id) DuplicateTemplateId asset has same generated c8y_ExternalId \"\(.template_id)\" from template \"'"$ID_TEMPLATE"'\" as another asset"
     elif .error == "TooManyIdentities" then
         "\(.id) TooManyIdentities asset has more than one c8y_Asset identity \(.externalIds))"
     elif .error != "" and .error !=     null then
