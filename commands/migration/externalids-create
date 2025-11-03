@@ -231,42 +231,20 @@ read_assets() {
         exit 1
     fi
 
-    if [ "$OUTPUT" == "json" ]; then
-        echo "$all_assets"
-    fi
-
     return 0
 }
 
 # Function to process assets with pagination
 process_assets() {
     local total_processed=0
-    local total_failed=0
 
     local start_time end_time elapsed
     start_time=$(date +%s)
 
-    # Create output template for assets. This is used to capture the output of the c8y commands.
-    # We include id, type, c8y_ExternalId, tenant, self, and all template properties.
-    # tenant and self is added to help with debugging and tracking when running across multiple tenants.
-    output_template_fields=(
-        "id: if std.objectHas(output, 'id') then output.id else input.value.id"
-        "type: if std.objectHas(output, 'type') then output.type else std.get(input.value, 'type', null)"
-        "c8y_ExternalId: if std.objectHas(output, 'c8y_ExternalId') then output.c8y_ExternalId else std.get(input.value, 'c8y_ExternalId', null)"
-        "c8y_ExternalAsset: if std.objectHas(output, 'c8y_ExternalAsset') then output.c8y_ExternalAsset else null"
-        "['self']: if std.objectHas(output, 'self') then output['self'] else input.value['self']"
-        "tenant: \"$C8Y_TENANT\""
-    )
-    # Add template properties, skipping duplicates and 'self'
-    for prop in "${TEMPLATE_PROPERTIES[@]}"; do
-        [[ "$prop" == "id" || "$prop" == "c8y_ExternalId" || "$prop" == "self" ]] && continue
-        if [[ "$prop" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-            output_template_fields+=("$prop: if std.objectHas(output, '$prop') then output.$prop else input.value.$prop")
-        else
-            output_template_fields+=("['$prop']: if std.objectHas(output, '$prop') then output['$prop'] else input.value['$prop']")
-        fi
-    done
-    output_template="{ $(join ', ' "${output_template_fields[@]}") }"
+    output_template='[ input.value + {
+        "'"$EXTERNAL_ASSET_FRAGMENT"'": std.get(output, "'"$EXTERNAL_ASSET_FRAGMENT"'", null),
+        "externalId": if std.objectHas(output, "managedObject") then output else null,
+    }]'
 
     # Create input template for updating assets, used in both inventory update and asset upsert body
     template_fields=(
@@ -277,54 +255,51 @@ process_assets() {
             "${EXTERNAL_ASSET_FRAGMENT}: ${EXTERNAL_ASSET}"
         )
     fi
-    input_template="{ $(join ', ' "${template_fields[@]}") }"
+    input_template="{ \"id\": \"asdwe234234\", $(join ', ' "${template_fields[@]}") }"
 
+    local result=""
     if [ "$USE_ASSET_UPSERT" = "1" ]; then
         info "Using asset upsert for creating external ID..."
-        echo "$all_assets" | \
+        result=$(echo "$all_assets" | \
             c8y dtm assets update \
                 --assetId "{id}" \
                 --template "$input_template" \
-                --outputTemplate "$output_template" \
+                --outputTemplate "" \
                 --force \
-                "${C8Y_FLAGS[@]}" \
-                1>> "$LOG_DIR/dtm-create-externalid-asset-update.log"
-        info "Check $LOG_DIR/dtm-create-externalid-asset-update.log for details..."
+                "${C8Y_FLAGS[@]}"
+        )
     else
         info "Updating inventory to update assets..."
-        echo "$all_assets" | \
-            c8y inventory update \
+        result=$(echo "$all_assets" | \
+           c8y inventory update \
                 --template "$input_template" \
                 --outputTemplate "$output_template" \
                 --force \
-                "${C8Y_FLAGS[@]}" \
-                1>> "$LOG_DIR/dtm-create-externalid-inventory-update.log"
-
-        if [ -f "$LOG_DIR/dtm-create-externalid-inventory-update.log" ] && grep -q 'ERROR' "$LOG_DIR/dtm-create-externalid-inventory-update.log" 2>/dev/null; then
-            total_failed=$((total_failed + $(grep -c 'ERROR' "$LOG_DIR/dtm-create-externalid-inventory-update.log" 2>/dev/null)))
-        fi
+                "${C8Y_FLAGS[@]}"
+        )
 
         info "Creating identities for assets of type c8y_Asset..."
-        echo "$all_assets" | \
+        result=$(echo "$result" | \
             c8y identity create \
                 --type "c8y_Asset" \
                 --template '{ device: input.value.id, externalId: input.value.template_id }' \
+                --outputTemplate "$output_template" \
                 --force \
-                "${C8Y_FLAGS[@]}" \
-                1>> "$LOG_DIR/dtm-create-externalid-identity.log"
-
-        if [ -f "$LOG_DIR/dtm-create-externalid-identity.log" ] && grep -q 'ERROR' "$LOG_DIR/dtm-create-externalid-identity.log" 2>/dev/null; then
-            total_failed=$(grep -c 'ERROR' "$LOG_DIR/dtm-create-externalid-identity.log" 2>/dev/null)
-        fi
+                "${C8Y_FLAGS[@]}"
+        )
     fi
 
     total_processed=$(echo "$all_assets" | wc -l | tr -d ' \n\r\t')
     end_time=$(date +%s)
     elapsed=$((end_time - start_time))
 
-    success "Processed $total_processed assets for $C8Y_TENANT, $total_failed failed (${elapsed}s)"
+    if [ "$OUTPUT" == "json" ]; then
+        echo "$result"
+    fi    
 
-    return "$total_failed"
+    success "Processed $total_processed assets for $C8Y_TENANT (${elapsed}s)"
+
+    return 0
 }
 
 # Export function and variables for parallel processing
