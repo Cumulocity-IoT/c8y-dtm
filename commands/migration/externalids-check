@@ -137,18 +137,17 @@ template_id_condition_block=$(join " && " "${template_id_condition[@]}")
 
 output_template='
     local hasValue(obj, field) = std.objectHas(obj, field) && obj[field] != null && std.toString(obj[field]) != "";
+    local template_id_values = {'"$template_id_values_block"'};
+    local template_id = if '"$template_id_condition_block"' then "'"$template_id_format"'" % template_id_values else null;
+    local common = { type: std.get(input.value, "type", null), template_id: template_id, tenant: "'"$C8Y_TENANT"'" };
     if output == null || (std.isArray(output) && std.length(output) == 0) then
         if !hasValue(input.value, "c8y_ExternalId") then
-            [input.value + {externalId: null, "error": "MissingExternalIdAndIdentity"}]
+            [input.value + common + { "error": "MissingExternalIdAndIdentity", externalId: null }]
         else
-            [input.value + {externalId: null, "error": "MissingIdentityForAsset"}]
+            [input.value + common + { "error": "MissingIdentityForAsset", externalId: null }]
     else
         local _out = if std.isArray(output) then output else [ output ];
-        local template_id_values = {'"$template_id_values_block"'};
-        local template_id = if '"$template_id_condition_block"' then "'"$template_id_format"'" % template_id_values else null;
-        [input.value + {
-            type: std.get(input.value, "type", null),
-            template_id: template_id,
+        [input.value + common + {
             externalId: std.get(item, "externalId", null),
             externalId_type: std.get(item, "type", null),
             "error":
