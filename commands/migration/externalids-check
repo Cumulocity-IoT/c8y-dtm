@@ -19,7 +19,7 @@ Usage:
     c8y dtm migration externalids-check [FLAGS]
 
 Description:
-    This command checks that all DTM assets with a c8y_ExternalId fragment have a corresponding external ID of type c8y_Asset in the identity API.
+    This command checks that all DTM assets for different error conditions related to their c8y_ExternalId fragment and corresponding external IDs of type c8y_Asset in the Identity API.
 
 Flags:
     -o, --output                  Output format of result. By default only errors are printed to stderr.
@@ -51,7 +51,7 @@ examples() {
 Examples:
     c8y dtm migration externalids-check --workers 10 --progress
 
-    externalids-check --id-template "{field1}_{field2}" --workers 5 --output json 2> /dev/null | \
+    externalids-check --id-template "{field1}_{field2}" --workers 5 --output --error-only json 2> /dev/null | \
         c8y util show --select id,error
 EOF
     exit 0
@@ -187,25 +187,7 @@ result=$(echo "$assets" | c8y identity list \
     "${C8Y_FLAGS[@]}" 
 )
 
-duplicates=$(echo "$result" | jq -c -s '
-  . as $all
-  | ($all | map(.c8y_ExternalId) | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_extids
-  | ($all | map(.template_id)    | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_tmplids
-  | $all
-  | map(
-      . as $item
-      | ($item.c8y_ExternalId // empty) as $eid
-      | ($item.template_id // empty) as $tid
-      | if (($eid | type == "string") and ($dup_extids | index($eid))) then
-            . + {error: "DuplicateExternalId"}
-        elif (($tid | type == "string") and ($dup_tmplids | index($tid))) then
-            . + {error: "DuplicateTemplateId"}
-        else
-            empty
-        end
-    )
- | .
-[]')
+duplicates=$(get_duplicate_external_ids "$result")
 
 error_count=0
 total_count=0
@@ -237,14 +219,14 @@ done < <(cat <(echo "$result") <(echo "$duplicates") | jq -r '
     elif .error == "MissingRequiredField" then
         "\(.id) MissingRequiredField asset is missing one or more required fields to generate c8y_ExternalId from template '"$ID_TEMPLATE"'"
     elif .error == "ExternalIdTemplateIdMismatch" then
-        "\(.id) ExternalIdTemplateIdMismatch c8y_ExternalId \"\(.c8y_ExternalId)\" does not match expected \"\(.template_id)\""
+        "\(.id) ExternalIdTemplateIdMismatch c8y_ExternalId \"\(.c8y_ExternalId)\" does not match expected value \"\(.template_id)\" from template '"$ID_TEMPLATE"'"
     elif .error == "DuplicateExternalId" then
         "\(.id) DuplicateExternalId asset shares c8y_ExternalId \"\(.c8y_ExternalId)\" with another asset"
     elif .error == "DuplicateTemplateId" then
-        "\(.id) DuplicateTemplateId asset has same generated c8y_ExternalId based on template '"$ID_TEMPLATE"' as another asset"
+        "\(.id) DuplicateTemplateId asset has same generated c8y_ExternalId \"\(.template_id)\" from template "'"$ID_TEMPLATE"'" as another asset"
     elif .error == "TooManyIdentities" then
         "\(.id) TooManyIdentities asset has more than one c8y_Asset identity \(.externalIds))"
-    elif .error != "" and .error != null then
+    elif .error != "" and .error !=     null then
         "\(.id) \(.error) No error details available"
     else
         "\(.id)"
