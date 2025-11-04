@@ -23,8 +23,9 @@ Description:
 
 Flags:
     -o, --output                  Output format of result. By default only errors are printed to stderr.
-                                  Set to "json" to output full results to stdout in JSON format.
+                                  Set to "json" to output full results to stdout in json format.
     -e, --error-only              Output only assets with errors
+    -s, --summary                 Show a summary of error counts in json format on stderr.
     -t, --id-template <template>  Template for generating the value of c8y_ExternalId assigned to the asset
                                   Use for testing assets for placeholder fields required to generate the external ID.
                                   Example: "dtm_{id}" or "dtm_{id}_{name}"
@@ -51,8 +52,9 @@ examples() {
 Examples:
     c8y dtm migration externalids-check --workers 10 --progress
 
+    # check assets for errors, output to json, filter to only those missing c8y_ExternalId
     externalids-check --id-template "{field1}_{field2}" --workers 5 --output --error-only json 2> /dev/null | \
-        c8y util show --select id,error
+        c8y util show --select id,error --filter "nothas c8y_ExternalId"
 EOF
     exit 0
 }
@@ -60,6 +62,7 @@ EOF
 POSITIONAL_ARGS=()
 ERROR_ONLY=""
 OUTPUT=""
+SUMMARY=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -77,6 +80,9 @@ while [ $# -gt 0 ]; do
             ;;
         -e|--error-only)
             ERROR_ONLY="true"
+            ;;
+        -s|--summary)
+            SUMMARY="true"
             ;;
         -h|--help)
             help
@@ -96,6 +102,11 @@ set -- "${POSITIONAL_ARGS[@]}"
 # Check if ID template is provided
 if [ -z "$ID_TEMPLATE" ]; then
     error "The --id-template argument is required." "See 'c8y dtm migration externalids-create --help' for details."
+    exit 1
+fi
+
+if [ "$OUTPUT" != "json" ] && [ "$OUTPUT" != "JSON" ]; then
+    error "Invalid value for --output: $OUTPUT" "Supported values are: json"
     exit 1
 fi
 
@@ -119,13 +130,11 @@ if [ "$ID_TEMPLATE" != "" ] && [ ${#TEMPLATE_PROPERTIES[@]} -eq 0 ]; then
     exit 1
 fi
 
-FILTER_QUERY=""
 assets=$(load_all_assets)
-
 total=$(echo "$assets" | wc -l | tr -d ' \n\r\t')
 
-if [ "$total" -eq 0 ]; then
-    info "No assets found for query ${FILTER_QUERY}. Exiting."
+if [ -z "$assets" ] || [ "$total" -eq 0 ]; then
+    info "No assets found for $C8Y_HOST. Exiting."
     exit 0
 fi
 
@@ -151,10 +160,8 @@ output_template='
     local template_id = if '"$template_id_condition_block"' then "'"$template_id_format"'" % template_id_values else null;
     local common = { type: std.get(input.value, "type", null), template_id: template_id, tenant: "'"$C8Y_TENANT"'" };
     if output == null || (std.isArray(output) && std.length(output) == 0) then
-        if !hasValue(input.value, "c8y_ExternalId") then
-            [input.value + common + { "error": "MissingExternalIdAndIdentity", externalId: null }]
-        else
-            [input.value + common + { "error": "MissingIdentityForAsset", externalId: null }]
+        local err = if !hasValue(input.value, "c8y_ExternalId") then "MissingExternalIdAndIdentity" else "MissingIdentityForAsset";
+        [input.value + common + { "error": err, externalId: null, c8y_ExternalId: std.get(input.value, "c8y_ExternalId", null) }]
     else
         local _out = if std.isArray(output) then output else [ output ];
         if std.length(_out) > 1 then
@@ -250,3 +257,7 @@ if [ "$OUTPUT" == "json" ]; then
 fi
 
 success "Completed checking all assets: $total_count total, $error_count errors."
+if [ "$SUMMARY" == "true" ]; then
+    summary=$(cat <(echo "$result") <(echo "$duplicates") | jq -s 'map(select(.error != null) | .error) | group_by(.) | map({(.[0]): length}) | add')
+    info "$(echo "$summary" | jq .)"
+fi

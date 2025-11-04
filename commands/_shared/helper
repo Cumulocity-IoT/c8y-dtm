@@ -169,8 +169,8 @@ load_all_assets() {
     else
         page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
     fi
-    
-    echo "$page_result"
+
+    echo -n "$page_result"
 }
 
 get_duplicate_external_ids() {
@@ -207,5 +207,3 @@ export -f check_prerequisites join get_duplicate_external_ids
 export -f extract_template_properties init_template_properties_array
 export -f validate_positional_args
 export -f warn error info success
-
-export TEMPLATE_PROPERTIES
