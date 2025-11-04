@@ -40,7 +40,6 @@ Flags:
                                  Supports placeholders for any asset fragment or property
     -e, --external-asset <json>  Assign c8y_ExternalAsset using an optional JSON object as its value.
     -u, --use-asset-upsert       Use asset upsert (c8y dtm assets update) for external ID creation (default: false)
-    -l, --logDir <directory>     Directory for log files (default: current directory)
     -f, --filter <query>         Query to filter assets (e.g., "type eq 'MyAssetType'", default: "not(has(${EXTERNAL_ID_FRAGMENT}))")
     -h, --help                   Show this help message
         --examples               Show usage examples
@@ -98,7 +97,6 @@ ID_TEMPLATE=""
 EXTERNAL_ASSET=""
 FILTER_QUERY="not(has(${EXTERNAL_ID_FRAGMENT}))"
 USE_ASSET_UPSERT=0
-LOG_DIR="."
 POSITIONAL_ARGS=()
 OUTPUT=""
 
@@ -134,10 +132,6 @@ while [ $# -gt 0 ]; do
             FILTER_QUERY="$2"
             shift
             ;;
-        -l|--logDir)
-            LOG_DIR="$2"
-            shift
-            ;;
         -u|--use-asset-upsert)
             USE_ASSET_UPSERT=1
             ;;
@@ -155,11 +149,6 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-
-# Ensure log directory exists
-if [ ! -d "$LOG_DIR" ]; then
-    mkdir -p "$LOG_DIR"
-fi
 
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
