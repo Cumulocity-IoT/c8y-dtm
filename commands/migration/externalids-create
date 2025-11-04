@@ -17,43 +17,44 @@ help() {
 Create external IDs for DTM assets to be used with upserting assets.
 
 Usage:
-    c8y dtm migration externalids-create [FLAGS]
+  c8y dtm migration externalids-create [FLAGS]
 
 Description:
-    This command creates external IDs for DTM assets using a configurable template.
-    All assets or all assets matching a given query will be updated with a
-    c8y_ExternalId fragment generated based on the provided template. The template
-    can include placeholders for any asset fragment or property. 
+  This command creates external IDs for DTM assets using a configurable template. All assets or 
+  all assets matching a given query will be updated with a  c8y_ExternalId fragment generated 
+  based on the provided template. The template can include placeholders for any asset fragment or
+  property. 
     
-    For the c8y_ExternalId, an external id of type c8y_Asset will be created in the
-    Identity API.
+  For the c8y_ExternalId, an external id of type c8y_Asset will be created in the Identity API.
 
-    Using the --external-asset flag, a c8y_ExternalAsset fragment can also be added
-    to the asset with an optional JSON object as its value. If no value is provided,
-    the fragment will be created with an empty object. If null is provided, the fragment
-    will be deleted.
+  Using the --external-asset flag, a c8y_ExternalAsset fragment can also be added to the asset 
+  with an optional JSON object as its value. If no value is provided, the fragment will be 
+  created with an empty object. If null is provided, the fragment will be deleted.
 
 Flags:
-    -o, --output                 Output format of result. By default only errors are printed to stderr.
-                                 Set to "json" to output full results to stdout in JSON format.
-    -t, --id-template <template> Template for generating the value of c8y_ExternalId assigned to the asset (required)
-                                 Supports placeholders for any asset fragment or property
-    -e, --external-asset <json>  Assign c8y_ExternalAsset using an optional JSON object as its value.
-    -u, --use-asset-upsert       Use asset upsert (c8y dtm assets update) for external ID creation (default: false)
-    -f, --filter <query>         Query to filter assets (e.g., "type eq 'MyAssetType'", default: "not(has(${EXTERNAL_ID_FRAGMENT}))")
-    -h, --help                   Show this help message
-        --examples               Show usage examples
+  -o, --output                 Output format of result. By default only errors are printed to stderr.
+                               Set to "json" to output full results to stdout in JSON format.
+  -t, --id-template <template> Template for generating the value of c8y_ExternalId from asset (required)
+                               Supports placeholders for any asset fragment or property.
+  -e, --external-asset <json>  Assign c8y_ExternalAsset. Value is fragment value as JSON.
+                               If no value is provided, an empty object will be assigned.
+                               If null is provided, the fragment will be deleted.
+  -u, --use-asset-upsert       Use asset upsert to create external IDs (default: false).
+  -f, --filter <query>         Query to filter assets (e.g., "type eq 'MyAssetType'").
+                               default: "not(has(${EXTERNAL_ID_FRAGMENT}))"
+  -h, --help                   Show this help message.
+      --examples               Show usage examples.
 
 Template Placeholders:
-    {<fragment>}               Any fragment (e.g., {name} or {id})
-    {<fragment>.<property>}    Any fragment property (e.g., {c8y_IsDevice.name})
+  {<fragment>}               Any fragment (e.g., {name} or {id})
+  {<fragment>.<property>}    Any fragment property (e.g., {c8y_IsDevice.name})
     
-    Note: Template placeholders can reference any fragment or property available
-    in the asset's JSON structure. Use dot notation for nested properties.
+  Note: Template placeholders can reference any fragment or property available
+  in the asset's JSON structure. Use dot notation for nested properties.
 
 Requirements:
-    - go-c8y-cli authenticated session (dev mode)
-    - jq for JSON processing
+  - go-c8y-cli authenticated session (dev mode)
+  - jq for JSON processing
 
 EOF
 
@@ -63,26 +64,26 @@ exit 0
 examples () {
   cat <<EOF
 Examples:
-    # Create external IDs with simple ID template
-    c8y dtm migration externalids-create --id-template "dtm_{id}" --external-asset '{"source": "Acme Inc."}'
+  # Create external IDs with simple ID template
+  c8y dtm migration externalids-create --id-template "dtm_{id}" --external-asset '{"source": "Acme Inc."}'
     
-    # Use asset name and type fragments
-    c8y dtm migration externalids-create --id-template "asset_{name}_{type}" --workers 8
+  # Use asset name and type fragments
+  c8y dtm migration externalids-create --id-template "asset_{name}_{type}" --workers 8
 
-    # Complex template with multiple fragments
-    c8y dtm migration externalids-create --id-template "{owner}_{fragment.name}_{id}"
+  # Complex template with multiple fragments
+  c8y dtm migration externalids-create --id-template "{owner}_{fragment.name}_{id}"
 
-    # Use external asset JSON data
-    c8y dtm migration externalids-create --id-template "ext_{id}" --external-asset '{"source": "Acme Inc."}'
+  # Use external asset JSON data
+  c8y dtm migration externalids-create --id-template "ext_{id}" --external-asset '{"source": "Acme Inc."}'
 
-    # Check assets have properties used in template and no external IDs yet
-    c8y inventory find --fragmentType "c8y_IsAsset" --select id,name,fragment1,fragment2,c8y_ExternalId --pageSize 1
+  # Check assets have properties used in template and no external IDs yet
+  c8y inventory find --fragmentType "c8y_IsAsset" --select id,name,fragment1,fragment2,c8y_ExternalId --pageSize 1
 
-    # Check relevant fragments after creation
-    c8y inventory find --query "has(c8y_ExternalId)" --fragmentType "c8y_IsAsset" --select id,c8y_ExternalId,c8y_ExternalAsset
+  # Check relevant fragments after creation
+  c8y inventory find --query "has(c8y_ExternalId)" --fragmentType "c8y_IsAsset" --select id,c8y_ExternalId,c8y_ExternalAsset
     
-    # Check identity has been created correctly
-    c8y inventory find --fragmentType "c8y_IsAsset" --pageSize 1 | c8y identity list --filter 'type eq c8y_Asset' 
+  # Check identity has been created correctly
+  c8y inventory find --fragmentType "c8y_IsAsset" --pageSize 1 | c8y identity list --filter 'type eq c8y_Asset' 
 
 EOF
 
@@ -90,7 +91,7 @@ exit 0
 }
 
 ALLOWED_FLAGS=(
-  --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
+  --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
 )
 
 ID_TEMPLATE=""
@@ -223,7 +224,6 @@ read_assets() {
     return 0
 }
 
-# Function to process assets with pagination
 process_assets() {
     local total_processed=0
 
@@ -294,8 +294,6 @@ process_assets() {
 export -f process_assets 
 export ID_TEMPLATE EXTERNAL_ASSET EXTERNAL_ID_FRAGMENT FILTER_QUERY ALLOWED_FLAGS 
 
-# Read assets and generate JSON map
 read_assets
 
-# Process assets and get the return code (failure count)
 process_assets
