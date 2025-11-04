@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+
+# Shared helper functions for DTM script commands
+
+# Logging helper functions (output to stderr)
+warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
+# error <colored-part> <plain-part>
+error() {
+    local colored_part="$1"
+    local plain_part="$2"
+    echo -e "\033[1;31mERROR $colored_part\033[0m $plain_part" >&2
+}
+info() { echo -e "INFO  $*" >&2; }
+success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
+
+# Parse positional args for allowed global flags
+validate_positional_args() {
+    POSITIONAL_ARGS=("$@")
+
+    # if allowed flags not defined, define empty array
+    if [ -z "${ALLOWED_FLAGS+x}" ]; then
+        ALLOWED_FLAGS=()
+    fi
+
+    C8Y_FLAGS=()
+    IDX=0
+    while [ $IDX -lt ${#POSITIONAL_ARGS[@]} ]; do
+        arg="${POSITIONAL_ARGS[$IDX]}"
+        if [ -z "$arg" ]; then
+            IDX=$((IDX+1))
+            continue
+        fi
+        found=0
+        for flag in "${ALLOWED_FLAGS[@]}"; do
+            if [ "$arg" = "$flag" ]; then
+                found=1
+                C8Y_FLAGS+=("$arg")
+                # If next arg is not another flag, treat as value
+                next_idx=$((IDX+1))
+                next_arg="${POSITIONAL_ARGS[$next_idx]:-}"
+                if [[ ! "$next_arg" =~ ^- ]]; then
+                    C8Y_FLAGS+=("$next_arg")
+                    IDX=$((IDX+1))
+                fi
+                break
+            fi
+        done
+        if [ $found -eq 0 ]; then
+            error "Unknown or unsupported flag: $arg." "Use --help for usage information."
+            exit 1
+        fi
+        IDX=$((IDX+1))
+    done
+}
+
+# Function to check prerequisites
+check_prerequisites() {
+    if ! command -v c8y >/dev/null 2>&1; then
+        error "go-c8y-cli (c8y) is not installed or not in PATH"
+        exit 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        error "jq is not installed or not in PATH. Please install jq for JSON processing"
+        exit 1
+    fi
+
+    # Check if authenticated
+    if ! c8y currentuser get >/dev/null 2>&1; then
+        error "Not authenticated with Cumulocity. Please run 'set-session' first"
+        exit 1
+    fi
+}
+
+# Extracts the properties used in the template placeholders
+# Usage: extract_template_properties "<template_string>"
+# placeholders are in the format {property.path}
+# Outputs each property path on its own line to ensure space/newline safety
+extract_template_properties() {
+    local template="$1"
+    local properties=()
+    local placeholders
+    placeholders=$(echo "$template" | grep -oE '\{[^}]+\}' | sort -u)
+    while IFS= read -r placeholder; do
+        if [ -n "$placeholder" ]; then
+            # remove curly braces from placeholder
+            local property_path="${placeholder//[\{\}]/}"
+            properties+=("$property_path")
+        fi
+    done <<< "$placeholders"
+    # Output each property on its own line
+    for prop in "${properties[@]}"; do
+        echo "$prop"
+    done
+}
+
+init_template_properties_array() {
+    local template="$1"
+    TEMPLATE_PROPERTIES=()
+    while IFS= read -r prop; do
+        TEMPLATE_PROPERTIES+=("$prop")
+    done < <(extract_template_properties "$template")
+}
+
+join() {
+    local sep="$1"
+    shift
+    local result=""
+    local first=1
+    for item in "$@"; do
+        if [ $first -eq 1 ]; then
+            result="$item"
+            first=0
+        else
+            result="$result$sep$item"
+        fi
+    done
+    echo "$result"
+}
+
+load_all_assets() {
+    local select_fields=("id" "self" "c8y_ExternalId")
+    local required_fields=()
+
+    # Add template properties to select_fields (only unique ones)
+    for prop in "${TEMPLATE_PROPERTIES[@]}"; do
+        if [[ ! " ${select_fields[*]} " == *" ${prop} "* ]]; then
+            select_fields+=("$prop")
+        fi
+        required_fields+=("$prop")
+    done
+
+    local error_checks=()
+    for field in "${required_fields[@]}"; do
+        error_checks+=(".[\"$field\"] == null")
+    done
+
+    local jq_filter
+    if ! [ "${#error_checks[@]}" -eq 0 ]; then
+        local error_condition
+        error_condition=$(join ' or ' "${error_checks[@]}")
+        local jq_template_id
+        jq_template_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
+    
+        # shellcheck disable=SC2016
+        jq_filter='
+            . as $in
+            | ('"$error_condition"') as $missing
+            | (if $missing then "MissingRequiredField" else null end) as $error_val
+            | $in + {
+                error: $error_val,
+                template_id: (if $missing then null else "'"$jq_template_id"'" end),
+            }
+        '
+    fi
+
+    local c8y_args=(inventory find 
+        --includeAll 
+        --fragmentType "c8y_IsAsset" 
+        --select "$(join ',' "${select_fields[@]}")"
+        --output json
+    )
+    if [ -n "$FILTER_QUERY" ]; then
+        c8y_args+=(--query "$FILTER_QUERY")
+    fi
+
+    if ! [ -z "$jq_filter" ]; then
+        page_result=$(c8y "${c8y_args[@]}" 2>/dev/null | jq -c "$jq_filter")
+    else
+        page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
+    fi
+
+    echo -n "$page_result"
+}
+
+get_duplicate_external_ids() {
+    local json_map
+    if [ -n "$1" ]; then
+        json_map="$1"
+    else
+        # read from stdin
+        json_map="$(cat)"
+    fi
+    echo "$json_map" | jq -c -s '
+        . as $all
+        | ($all | map(.c8y_ExternalId) | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_extids
+        | ($all | map(.template_id)    | map(select(type == "string")) | group_by(.) | map(select(length > 1) | .[0])) as $dup_tmplids
+        | $all
+        | map(
+            . as $item
+            | ($item.c8y_ExternalId // empty) as $eid
+            | ($item.template_id // empty) as $tid
+            | if (($eid | type == "string") and ($dup_extids | index($eid))) then
+                    . + {error: "DuplicateExternalId"}
+                elif (($tid | type == "string") and ($dup_tmplids | index($tid))) then
+                    . + {error: "DuplicateTemplateId"}
+                else
+                    empty
+                end
+            )
+        | .
+        []'
+}
+
+# export functions and variables to be used in subprocesses if needed
+export -f check_prerequisites join get_duplicate_external_ids
+export -f extract_template_properties init_template_properties_array
+export -f validate_positional_args
+export -f warn error info success

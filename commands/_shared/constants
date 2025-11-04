@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+# Shared constants for DTM script commands
+
+EXTERNAL_ID_FRAGMENT="c8y_ExternalId"
+EXTERNAL_ASSET_FRAGMENT="c8y_ExternalAsset"
+
+export EXTERNAL_ID_FRAGMENT
+export EXTERNAL_ASSET_FRAGMENT
