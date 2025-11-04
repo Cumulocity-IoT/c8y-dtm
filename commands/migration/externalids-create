@@ -38,7 +38,7 @@ Flags:
                                  Set to "json" to output full results to stdout in JSON format.
     -t, --id-template <template> Template for generating the value of c8y_ExternalId assigned to the asset (required)
                                  Supports placeholders for any asset fragment or property
-    -e, --external-asset <json>  Assign c8y_ExternalAsset using an optional JSON object as its value.)
+    -e, --external-asset <json>  Assign c8y_ExternalAsset using an optional JSON object as its value.
     -u, --use-asset-upsert       Use asset upsert (c8y dtm assets update) for external ID creation (default: false)
     -l, --logDir <directory>     Directory for log files (default: current directory)
     -f, --filter <query>         Query to filter assets (e.g., "type eq 'MyAssetType'", default: "not(has(${EXTERNAL_ID_FRAGMENT}))")
@@ -166,13 +166,13 @@ set -- "${POSITIONAL_ARGS[@]}"
 
 # Check if ID template is provided
 if [ -z "$ID_TEMPLATE" ]; then
-    error "ID template is required. Use --id-template option" "See 'c8y dtm migration externalids-create --help' for details."
+    error "The --id-template argument is required." "See 'c8y dtm migration externalids-create --help' for details."
     exit 1
 fi
 
 # Validate external asset JSON format
-if [ -z "$EXTERNAL_ASSET" ] || ! echo "$EXTERNAL_ASSET" | jq empty; then
-    error "Invalid JSON for --external-asset: $EXTERNAL_ASSET" "Use '{\"source\": \"Acme Inc.\"}' or similar."
+if ! echo "$EXTERNAL_ASSET" | jq empty; then
+    error "Invalid JSON for --external-asset: $EXTERNAL_ASSET" "Use '{}', '{\"source\": \"Acme Inc.\"}', or null."
     exit 1
 fi
 
@@ -242,7 +242,7 @@ process_assets() {
     start_time=$(date +%s)
 
     output_template='[ input.value + {
-        "'"$EXTERNAL_ASSET_FRAGMENT"'": std.get(output, "'"$EXTERNAL_ASSET_FRAGMENT"'", null),
+        "'"$EXTERNAL_ASSET_FRAGMENT"'": std.get(output, "'"$EXTERNAL_ASSET_FRAGMENT"'", std.get(input.value, "'"$EXTERNAL_ASSET_FRAGMENT"'", null)),
         "externalId": if std.objectHas(output, "managedObject") then output else null,
     }]'
 
@@ -255,8 +255,7 @@ process_assets() {
             "${EXTERNAL_ASSET_FRAGMENT}: ${EXTERNAL_ASSET}"
         )
     fi
-    input_template="{ \"id\": \"asdwe234234\", $(join ', ' "${template_fields[@]}") }"
-
+    input_template="{ $(join ', ' "${template_fields[@]}") }"
     local result=""
     if [ "$USE_ASSET_UPSERT" = "1" ]; then
         info "Using asset upsert for creating external ID..."
@@ -264,7 +263,7 @@ process_assets() {
             c8y dtm assets update \
                 --assetId "{id}" \
                 --template "$input_template" \
-                --outputTemplate "" \
+                --outputTemplate "$output_template" \
                 --force \
                 "${C8Y_FLAGS[@]}"
         )
