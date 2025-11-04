@@ -135,22 +135,24 @@ load_all_assets() {
         error_checks+=(".[\"$field\"] == null")
     done
 
-    local error_condition
-    error_condition=$(join ' or ' "${error_checks[@]}")
-
-    local jq_template_id
-    jq_template_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
-
-    # shellcheck disable=SC2016
-    jq_filter='
-        . as $in
-        | ('"$error_condition"') as $missing
-        | (if $missing then "MissingRequiredField" else null end) as $error_val
-        | $in + {
-            error: $error_val,
-            template_id: (if $missing then null else "'"$jq_template_id"'" end),
-        }
-    '
+    local jq_filter
+    if ! [ "${#error_checks[@]}" -eq 0 ]; then
+        local error_condition
+        error_condition=$(join ' or ' "${error_checks[@]}")
+        local jq_template_id
+        jq_template_id=$(echo "$ID_TEMPLATE" | sed -E 's/\{([a-zA-Z0-9_.]+)\}/\\(.\1)/g')
+    
+        # shellcheck disable=SC2016
+        jq_filter='
+            . as $in
+            | ('"$error_condition"') as $missing
+            | (if $missing then "MissingRequiredField" else null end) as $error_val
+            | $in + {
+                error: $error_val,
+                template_id: (if $missing then null else "'"$jq_template_id"'" end),
+            }
+        '
+    fi
 
     local c8y_args=(inventory find 
         --includeAll 
@@ -161,8 +163,13 @@ load_all_assets() {
     if [ -n "$FILTER_QUERY" ]; then
         c8y_args+=(--query "$FILTER_QUERY")
     fi
-    page_result=$(c8y "${c8y_args[@]}" 2>/dev/null | jq -c "$jq_filter")
 
+    if ! [ -z "$jq_filter" ]; then
+        page_result=$(c8y "${c8y_args[@]}" 2>/dev/null | jq -c "$jq_filter")
+    else
+        page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
+    fi
+    
     echo "$page_result"
 }
 
