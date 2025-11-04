@@ -26,6 +26,7 @@ Flags:
                                   Set to "json" to output full results to stdout in json format.
     -e, --error-only              Output only assets with errors
     -s, --summary                 Show a summary of error counts in json format on stderr.
+        --summary-only            Show only the summary of error counts in json format on stderr, no individual errors.
     -t, --id-template <template>  Template for generating the value of c8y_ExternalId assigned to the asset
                                   Use for testing assets for placeholder fields required to generate the external ID.
                                   Example: "dtm_{id}" or "dtm_{id}_{name}"
@@ -63,6 +64,7 @@ POSITIONAL_ARGS=()
 ERROR_ONLY=""
 OUTPUT=""
 SUMMARY=""
+SUMMARY_ONLY=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -83,6 +85,10 @@ while [ $# -gt 0 ]; do
             ;;
         -s|--summary)
             SUMMARY="true"
+            ;;
+        --summary-only)
+            SUMMARY="true"
+            SUMMARY_ONLY="true"
             ;;
         -h|--help)
             help
@@ -218,6 +224,10 @@ while read -r id error error_msg; do
     if ! [ -z "$error" ]; then
         error_count=$((error_count+1))
     else 
+        continue
+    fi
+
+    if [ "$SUMMARY_ONLY" == "true" ]; then
         continue
     fi
 
