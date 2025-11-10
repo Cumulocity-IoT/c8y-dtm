@@ -213,7 +213,7 @@ process_assets() {
                 "${C8Y_FLAGS[@]}"
         )
     else
-        info "Updating inventory to update assets..."
+        info "Using inventory update for creating external ID..."
         result=$(echo "$all_assets" | \
            c8y inventory update \
                 --template "$input_template" \
