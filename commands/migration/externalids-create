@@ -180,22 +180,6 @@ if [ ${#TEMPLATE_PROPERTIES[@]} -eq 0 ]; then
     exit 1
 fi
 
-all_assets=""
-
-# Function to read assets with pagination and generate JSON lines (NDJSON)
-read_assets() {
-    # Read all assets and generate JSON map with external IDs
-    local start_time end_time elapsed
-    start_time=$(date +%s)
-
-    all_assets=$(load_all_assets)
-
-    end_time=$(date +%s)
-    elapsed=$((end_time - start_time))
-
-    return 0
-}
-
 process_assets() {
     local total_processed=0
 
@@ -262,29 +246,20 @@ process_assets() {
     return 0
 }
 
+all_assets=""
 if [ ! -t 0 ]; then
-    # stdin is not a terminal: read piped input
     all_assets=$(cat)
-
-    total_collected=$(echo "$all_assets" | wc -l | tr -d ' \n\r\t')
-    if [ -z "$all_assets" ] || [ "$all_assets" = "null" ] || [ "$all_assets" = "[]" ] || [ "$total_collected" -eq 0 ]; then
-        info "No assets found in piped input. Exiting."
-        exit 0
-    fi
-
-    success "Processing $total_collected assets from piped input"
 else
-    # stdin is a terminal: use normal asset loading
-    read_assets
-
-    total_collected=$(echo "$all_assets" | wc -l | tr -d ' \n\r\t')
-    if [ -z "$all_assets" ] || [ "$all_assets" = "null" ] || [ "$all_assets" = "[]" ] || [ "$total_collected" -eq 0 ]; then
-        info "No assets found matching query '$FILTER_QUERY'. Use --filter to specify a different query or use empty to match all assets."
-        exit 0
-    fi
-
-    success "Processing $total_collected assets for $C8Y_TENANT (${elapsed}s)"
+    all_assets=$(load_all_assets)
 fi
+
+if is_empty_result_set "$all_assets" ; then
+    info "No assets to process. Exiting."
+    exit 0
+fi
+
+total_collected=$(count_lines "$all_assets")
+info "Processing $total_collected assets..."
 
 # check for errors and fail if errors found
 assets_with_errors=$(echo "$all_assets" | jq -c 'select(.error == "MissingRequiredField")')
