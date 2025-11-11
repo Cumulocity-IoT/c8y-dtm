@@ -118,6 +118,34 @@ join() {
     echo "$result"
 }
 
+count_lines() {
+    local input="$1"
+    if [ -z "$input" ]; then
+        echo "0"
+        return
+    fi
+    echo "$input" | wc -l | tr -d ' \n\r\t'
+}
+
+is_empty_result_set() {
+    local input="$1"
+    local total_collected
+    total_collected=$(count_lines "$input")
+    
+    if [ -z "$input" ] || [ "$total_collected" -eq 0 ] || [ "$input" = "null" ] || [ "$input" = "[]" ]; then
+        return 0
+    fi
+    return 1
+}
+
+is_not_empty_result_set() {
+    local input="$1"
+    if is_empty_result_set "$input"; then
+        return 1
+    fi
+    return 0
+}
+
 load_all_assets() {
     local select_fields=("id" "self" "c8y_ExternalId")
     local required_fields=()
@@ -154,7 +182,8 @@ load_all_assets() {
         '
     fi
 
-    local c8y_args=(inventory find 
+    local c8y_args=(
+        inventory find 
         --includeAll 
         --fragmentType "c8y_IsAsset" 
         --select "$(join ',' "${select_fields[@]}")"

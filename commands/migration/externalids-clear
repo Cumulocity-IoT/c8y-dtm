@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+
+# Clear c8y_ExternalId and external identities of type c8y_Asset for DTM assets
+
+# import shared functions
+
+# shellcheck source=/dev/null
+source "$(dirname "$0")/../_shared/helper"
+source "$(dirname "$0")/../_shared/constants"
+
+set -e
+
+help() {
+    cat <<EOF
+Clear c8y_ExternalId and external identities of type c8y_Asset for DTM assets.
+
+Usage:
+  c8y dtm migration externalids-clear [FLAGS]
+
+Description:
+  This command removes the c8y_ExternalId fragment from all assets and deletes all external identities of type c8y_Asset for each asset.
+  Input can be piped (NDJSON) or loaded from inventory.
+
+Flags:
+Flags:
+  -f, --filter <query>          Query to filter assets (e.g., "type eq 'MyAssetType'").
+                                default: "not(has(${EXTERNAL_ID_FRAGMENT}))"
+  -c, --clear-fragment          Sets c8y_ExternalId fragment to null for all assets
+
+  -h, --help                    Show this help message
+      --examples                Show usage examples
+
+EOF
+    exit 0
+}
+
+examples() {
+    cat <<EOF
+Examples:
+  c8y dtm migration externalids-clear --workers 10 --progress
+
+  c8y dtm migration externalids-check --id-template "{field1}_{field2}" -o json --error-only \ 
+      c8y dtm migration externalids-clear --workers 10
+
+EOF
+    exit 0
+}
+
+FILTER_QUERY="not(has(${EXTERNAL_ID_FRAGMENT}))"
+POSITIONAL_ARGS=()
+CLEAR_FRAGMENT=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -f|--filter)
+            if [[ "$2" =~ ^- ]]; then
+                error "--filter requires a query string argument." "Use --filter \"\" to query without any filter."
+                exit 1
+            fi
+            FILTER_QUERY="$2"
+            shift
+            ;;
+        -h|--help)
+            help
+            ;;
+        --examples)
+            examples
+            ;;
+        --clear-fragment)
+            CLEAR_FRAGMENT=1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
+
+export ALLOWED_FLAGS=(
+  --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
+)
+
+# Restore additional arguments
+set -- "${POSITIONAL_ARGS[@]}"
+
+validate_positional_args "$@"
+
+check_prerequisites
+
+all_assets=""
+total_collected=0
+
+# Read assets from stdin or load all assets
+if [ ! -t 0 ]; then
+    all_assets=$(cat)
+else
+    all_assets=$(load_all_assets)
+fi
+
+if is_empty_result_set "$all_assets" ; then
+    info "No assets to clear. Exiting."
+    exit 0
+fi
+
+total_collected=$(count_lines "$all_assets")
+info "Processing $total_collected assets..."
+
+# Remove c8y_ExternalId from inventory managed object
+if [ "$CLEAR_FRAGMENT" = "1" ]; then
+    assets_with_external_id=$(echo "$all_assets" | jq -c 'select(has("c8y_ExternalId") and .c8y_ExternalId != null)')
+    assets_with_external_id_count=$(count_lines "$assets_with_external_id")
+
+    if [ "$assets_with_external_id_count" -eq 0 ]; then
+        info "No assets with c8y_ExternalId found. Nothing to do."
+    else 
+        info "Clearing c8y_ExternalId fragment from $assets_with_external_id_count assets..."
+        _result=$(echo "$all_assets" | c8y inventory update \
+            --template '{ id: input.value.id, c8y_ExternalId: null }' \
+            --force \
+            "${C8Y_FLAGS[@]}")
+    fi
+fi
+
+# Delete all external identities of type c8y_Asset for each asset
+info "Checking external identities of type c8y_Asset..."
+
+error_ids=$(echo "$all_assets" | jq -c '{id: .id}' | sort | uniq)
+identities_unique=$(echo "$error_ids" | c8y identity list --filter 'type eq c8y_Asset' "${C8Y_FLAGS[@]}")
+
+identities_count=$(count_lines "$identities_unique")
+if [ "$identities_count" -eq 0 ]; then
+    info "No external identities of type c8y_Asset found. Nothing to do."
+else
+    info "Deleting $identities_count external identities of type c8y_Asset."
+    _result=$(echo "$identities_unique" | c8y identity delete \
+        --type "c8y_Asset" \
+        --force \
+        "${C8Y_FLAGS[@]}")
+fi
+
+success "Cleared c8y_ExternalId and deleted external identities for $total_collected assets."
+
+export FILTER_QUERY

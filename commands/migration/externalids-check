@@ -24,7 +24,7 @@ Description:
 Flags:
   -o, --output                  Output format of result. By default only errors are printed to stderr.
                                 Set to "json" to output full results to stdout in json format.
-  -e, --error-only              Output only assets with errors
+  -e, --error-only <name>       Output only assets with errors. If name is provided, filter to only given error type.
   -s, --summary                 Show a summary of error counts in json format on stderr.
       --summary-only            Show only the summary of error counts in json format on stderr, no individual errors.
   -t, --id-template <template>  Template for generating the value of c8y_ExternalId assigned to the asset
@@ -51,7 +51,9 @@ EOF
 examples() {
     cat <<EOF
 Examples:
-  c8y dtm migration externalids-check --workers 10 --progress
+  c8y dtm migration externalids-check --id-template "{field1}_{field2}" --workers 10 --progress
+
+  c8y dtm migration externalids-check --id-template "{field1}_{field2}" -o json --error-only ExternalIdMismatch
 
   # check assets for errors, output to json, filter to only those missing c8y_ExternalId
   externalids-check --id-template "{field1}_{field2}" --workers 5 --output --error-only json 2> /dev/null | \
@@ -81,7 +83,12 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -e|--error-only)
-            ERROR_ONLY="true"
+            if [ -z "$2" ] || [[ "$2" =~ ^- ]]; then
+                ERROR_ONLY="null"
+            else
+                ERROR_ONLY="$2"
+                shift
+            fi
             ;;
         -s|--summary)
             SUMMARY="true"
@@ -208,15 +215,16 @@ result=$(echo "$assets" | c8y identity list \
 duplicates=$(get_duplicate_external_ids "$result")
 
 error_count=0
-total_count=0
+
+output=$(cat <(echo "$result") <(echo "$duplicates"))
+if ! [ -z "$ERROR_ONLY" ] ; then
+    if [ "$ERROR_ONLY" == "null" ]; then operator="!= null"; else operator="== \"$ERROR_ONLY\""; fi
+    output=$(echo "$output" | jq -c ". | select(.error $operator)")
+fi
 
 # Use process substitution to avoid subshell, so counters persist
 while read -r id error error_msg; do
     if [ -z "$id" ]; then continue; fi
-
-    if ! [ "$error" == "DuplicateTemplateId" ] && ! [ "$error" == "DuplicateExternalId" ]; then
-        total_count=$((total_count+1))
-    fi
 
     if ! [ -z "$error" ]; then
         error_count=$((error_count+1))
@@ -229,7 +237,7 @@ while read -r id error error_msg; do
     fi
 
     error "$id $error" "$error_msg"
-done < <(cat <(echo "$result") <(echo "$duplicates") | jq -r '
+done < <(echo "$output" | jq -r '
     if .error == "MissingExternalIdInAsset" then
         "\(.id) MissingExternalIdInAsset asset has no c8y_ExternalId, but c8y_Asset identity with externalId \"\(.externalId)\""
     elif .error == "MissingExternalIdAndIdentity" then
@@ -256,15 +264,22 @@ done < <(cat <(echo "$result") <(echo "$duplicates") | jq -r '
 ')
 
 if [ "$OUTPUT" == "json" ]; then
-    if [ "$ERROR_ONLY" == "true" ]; then
-        cat <(echo "$result" | jq -c '. | select(.error != null)') <(echo "$duplicates")
-    else
-        echo "$result"
-    fi
+    echo "$output"
 fi
 
-success "Completed checking all assets: $total_count total, $error_count errors."
+if ! [ -z "$ERROR_ONLY" ] && [ "$ERROR_ONLY" != "null" ]; then
+    success "Completed checking assets for $ERROR_ONLY: $total total, $error_count errors."
+else
+    success "Completed checking assets: $total total, $error_count errors."
+fi
+
 if [ "$SUMMARY" == "true" ]; then
-    summary=$(cat <(echo "$result") <(echo "$duplicates") | jq -s 'map(select(.error != null) | .error) | group_by(.) | map({(.[0]): length}) | add')
-    info "$(echo "$summary" | jq .)"
+    summary=$(echo "$output" | jq -s 'map(select(.error != null) | .error) | group_by(.) | map({(.[0]): length}) | add')
+    echo "$summary" | jq -r '
+        to_entries
+        | map([.key, (.value|tostring)])
+        | .[] | @tsv
+    ' | awk -F'\t' '{printf "%-30s %5s\n", $1, $2}' | while IFS= read -r line; do
+        info "$line"
+    done
 fi
