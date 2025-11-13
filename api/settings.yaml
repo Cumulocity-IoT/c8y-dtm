@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+---
+$schema: https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+group:
+  name: settings
+  description: Manage Asset API settings
+commands:
+  - name: reload
+    description: Force reload the settings from tenant options. 
+    descriptionLong: >-
+      This command forces the Asset API to reload its settings from the tenant options.
+      Updating tenant options does not immediately apply the new settings, but requires
+      up to 10 minutes for synchronization. This command triggers that reload process to
+      make the new settings effective immediately.
+    method: POST
+    path: service/dtm/settings/reload
+    contentType: text/plain
+    accept: text/plain
+  - name: list
+    description: Retrieves the current settings.
+    method: GET
+    path: service/dtm/settings
+  - name: detail
+    description: Retrieves a specific setting by key and its value.
+    method: GET
+    path: service/dtm/settings/{key}
+    pathParameters:
+      - name: key
+        type: string
+        description: The key of the setting.
+
