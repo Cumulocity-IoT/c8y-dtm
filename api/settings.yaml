@@ -21,7 +21,7 @@ commands:
     method: GET
     path: service/dtm/settings
   - name: detail
-    description: Retrieves a specific setting by key and its value.
+    description: Retrieves a specific setting and its value by key.
     method: GET
     path: service/dtm/settings/{key}
     pathParameters:
