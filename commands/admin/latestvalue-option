@@ -125,12 +125,6 @@ fi
 
 info "DTM setting for linked series latest value mode: $dtm_setting"
 
-OUTPUT_REDIRECT=">/dev/null"
-if [ "$REQUIRES_OUTPUT" -eq 1 ]; then
-  OUTPUT_REDIRECT=""
-fi
-  info "Output: redirected: $OUTPUT_REDIRECT"
-
 if [ "$current_count" -gt 1000 ]; then
   warn "$LATEST_VALUE_CATEGORY - Current options count: $current_count. Review performance implications."
 else 
