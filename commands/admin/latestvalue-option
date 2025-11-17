@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+
+# Clear all tenant options for measurement.series.latestvalue category
+
+# import shared functions
+
+# shellcheck source=/dev/null
+source "$(dirname "$0")/../_shared/helper"
+source "$(dirname "$0")/../_shared/constants"
+
+set -e
+
+help() {
+    cat <<EOF
+Manage tenant options of category measurement.series.latestvalue.
+
+This command allows you to 
+ - clear existing tenant options, 
+ - enable latest value for all series (*),
+ - get current options, and 
+ - set new options from stdin.
+
+Usage:
+  c8y dtm admin latestvalue-option --clear
+
+Description:
+  This command helps manage tenant options in the category measurement.series.latestvalue used by DTM for accessing latest values for linked series.
+
+  As the behviour of DTM configuration of latest value options is configurable, this command provides flexibility to keep configurations and options aligned.
+
+Flags:
+  -c, --clear         Delete all tenant options in the category
+  -a, --set-all       Create a tenant option with key "*" to enable latest value for all series
+                      This will not remove existing series options. Use with --clear to remove options.
+  -g, --get           Get current tenant options 
+  -s, --set           Set tenant options and read from stdin
+  -h, --help          Show this help message
+EOF
+    exit 0
+}
+
+examples() {
+    cat <<EOF
+Examples:
+  # Clear all $LATEST_VALUE_CATEGORY tenant options for the latest value category
+  c8y dtm admin latestvalue-option --clear
+
+  # Enable latest value for all series after clearing existing options
+  # Use 20 parallel workers and force write operations
+  c8y dtm admin latestvalue-option --clear --enable-all --workers 20 --force
+
+  # Get current tenant options and save to options.json
+  c8y dtm admin latestvalue-option --get > options.json
+
+  # Set tenant options from options.json using 10 parallel workers and force write operations
+  cat options.json | c8y dtm admin latestvalue-option --set --workers 10 --force
+
+  # Set tenant options from options.json after clearing existing options
+  cat options.json | c8y dtm admin latestvalue-option --clear --set --workers 10 --force
+
+EOF
+    exit 0
+}
+
+LATEST_VALUE_CATEGORY="measurement.series.latestvalue"
+DTM_CONFIG_KEY="assets.linkedSeries.tenantOptionForLatestValues.mode"
+POSITIONAL_ARGS=()
+
+CLEAR=0
+ENABLE_ALL=0
+SET_OPTIONS=0
+GET_OPTIONS=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+          help
+          ;;
+        -a|--enable-all|--set-all)
+          ENABLE_ALL=1
+          ;;
+        -s|--set)
+          SET_OPTIONS=1
+          ;;
+        -g|--get)
+          GET_OPTIONS=1
+          ;;
+        --examples)
+          examples
+          ;;
+        -c|--clear)
+          CLEAR=1
+          ;;
+        *)
+          POSITIONAL_ARGS+=("$1")
+          ;;
+    esac
+    shift
+done
+
+export ALLOWED_FLAGS=(
+  --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --force --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --output -o --progress --timeout --totalErrors --workers --verbose
+)
+
+# Restore additional arguments
+set -- "${POSITIONAL_ARGS[@]}"
+
+validate_positional_args "$@"
+
+check_prerequisites
+
+options=""
+if [ ! -t 0 ]; then
+    options=$(cat)
+fi
+
+current_options=$(c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" < /dev/null) 
+current_count=$(echo "$current_options" | jq -r 'keys[]' | wc -l | tr -d ' ')
+dtm_setting=$(
+  c8y tenantoptions get --category "dtm" --key "$DTM_CONFIG_KEY" --withError --outputTemplate "response" --silentExit --silentStatusCodes 404 < /dev/null
+)
+if is_empty_result_set "$dtm_setting"; then
+  dtm_setting="undefined"
+fi
+
+info "DTM setting for linked series latest value mode: $dtm_setting"
+
+if [ "$current_count" -gt 1000 ]; then
+  warn "$LATEST_VALUE_CATEGORY - Current options count: $current_count. Review performance implications."
+else 
+  info "$LATEST_VALUE_CATEGORY - Current options count: $current_count"
+fi
+
+if [ "$GET_OPTIONS" = "1" ]; then
+    echo "$current_options" | c8y util show "${C8Y_FLAGS[@]}"
+fi
+
+if [ "$CLEAR" = "1" ]; then
+    info "Clearing all tenant options in category $LATEST_VALUE_CATEGORY ..."
+    c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" < /dev/null \
+        | jq -r 'keys[] | @uri | @uri' \
+        | c8y tenantoptions delete --category $LATEST_VALUE_CATEGORY "${C8Y_FLAGS[@]}" >/dev/null
+fi
+
+if [ "$SET_OPTIONS" = "1" ] && is_not_empty_result_set "$options"; then
+    info "Setting tenant options in category $LATEST_VALUE_CATEGORY from input ..."
+    echo "$options" \
+        | jq -c 'to_entries[] | (.key)' \
+        | c8y tenantoptions create --category $LATEST_VALUE_CATEGORY  --value "" "${C8Y_FLAGS[@]}" >/dev/null
+fi
+
+if [ "$ENABLE_ALL" = "1" ]; then
+    info "Enabling latest value for all series by adding '*' for category $LATEST_VALUE_CATEGORY ..."
+    c8y tenantoptions create --category "$LATEST_VALUE_CATEGORY" --key "*" --value "" "${C8Y_FLAGS[@]}" >/dev/null < /dev/null
+fi
