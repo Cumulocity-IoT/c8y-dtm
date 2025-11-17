@@ -125,6 +125,12 @@ fi
 
 info "DTM setting for linked series latest value mode: $dtm_setting"
 
+OUTPUT_REDIRECT=">/dev/null"
+if [ "$REQUIRES_OUTPUT" -eq 1 ]; then
+  OUTPUT_REDIRECT=""
+fi
+  info "Output: redirected: $OUTPUT_REDIRECT"
+
 if [ "$current_count" -gt 1000 ]; then
   warn "$LATEST_VALUE_CATEGORY - Current options count: $current_count. Review performance implications."
 else 
@@ -137,19 +143,34 @@ fi
 
 if [ "$CLEAR" = "1" ]; then
     info "Clearing all tenant options in category $LATEST_VALUE_CATEGORY ..."
-    c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" < /dev/null \
-        | jq -r 'keys[] | @uri | @uri' \
-        | c8y tenantoptions delete --category $LATEST_VALUE_CATEGORY "${C8Y_FLAGS[@]}" >/dev/null
+    result=$(
+        c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" < /dev/null \
+            | jq -r 'keys[] | @uri | @uri' \
+            | c8y tenantoptions delete --category $LATEST_VALUE_CATEGORY "${C8Y_FLAGS[@]}"
+    )
+    if [ "$REQUIRES_OUTPUT" -eq 1 ] && ! [ -z "$result" ]; then
+      echo "$result" 
+    fi
 fi
 
 if [ "$SET_OPTIONS" = "1" ] && is_not_empty_result_set "$options"; then
     info "Setting tenant options in category $LATEST_VALUE_CATEGORY from input ..."
-    echo "$options" \
-        | jq -c 'to_entries[] | (.key)' \
-        | c8y tenantoptions create --category $LATEST_VALUE_CATEGORY  --value "" "${C8Y_FLAGS[@]}" >/dev/null
+    result=$(
+        echo "$options" \
+            | jq -c 'to_entries[] | (.key)' \
+            | c8y tenantoptions create --category $LATEST_VALUE_CATEGORY  --value "" "${C8Y_FLAGS[@]}"
+    )
+    if [ "$REQUIRES_OUTPUT" -eq 1 ] && ! [ -z "$result" ]; then
+      echo "$result" 
+    fi
 fi
 
 if [ "$ENABLE_ALL" = "1" ]; then
     info "Enabling latest value for all series by adding '*' for category $LATEST_VALUE_CATEGORY ..."
-    c8y tenantoptions create --category "$LATEST_VALUE_CATEGORY" --key "*" --value "" "${C8Y_FLAGS[@]}" >/dev/null < /dev/null
+    result=$(
+      c8y tenantoptions create --category "$LATEST_VALUE_CATEGORY" --key "*" --value "" "${C8Y_FLAGS[@]}" < /dev/null
+    )
+    if [ "$REQUIRES_OUTPUT" -eq 1 ] && ! [ -z "$result" ]; then
+      echo "$result" 
+    fi
 fi
