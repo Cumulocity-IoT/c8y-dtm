@@ -40,7 +40,7 @@ Flags:
 
   -g, --get           Get current tenant options 
   -s, --set           Set tenant options and read from stdin
-  -a, --set-all       Create a tenant option with key "*" to enable latest value for all series
+  -a, --enable-all    Create a tenant option with key "*" to enable latest value for all series
                       This will not remove existing options. Use with --clear to remove existing options.
   -c, --clear         Delete all tenant options in the category
 
@@ -190,8 +190,18 @@ fi
 
 if [ "$SET_OPTIONS" = "1" ] && is_not_empty_result_set "$options"; then
     info "Setting tenant options in category $LATEST_VALUE_CATEGORY from input ..."
+
+    options_json=""
+    # Test if $options is valid JSON
+    if echo "$options" | jq -e . >/dev/null 2>&1; then
+        options_json="$options"
+    else
+        info "Input is not valid JSON. Assuming plain text lines as keys ..."
+        options_json=$(echo "$options" | jq -R -s 'split("\n") | map(select(length > 0)) | map({(.): ""}) | add')
+    fi
+
     result=$(
-        echo "$options" |
+        echo "$options_json" |
             jq -c 'to_entries[] | (.key)' |
             c8y tenantoptions create --category $LATEST_VALUE_CATEGORY --value "" "${C8Y_FLAGS[@]}"
     )
@@ -209,3 +219,5 @@ if [ "$ENABLE_ALL" = "1" ]; then
         echo "$result"
     fi
 fi
+
+info "Done."
