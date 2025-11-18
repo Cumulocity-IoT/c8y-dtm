@@ -16,8 +16,8 @@ success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
 # Parse positional args for allowed global flags
 validate_positional_args() {
     POSITIONAL_ARGS=("$@")
+    REQUIRES_OUTPUT=0
 
-    # if allowed flags not defined, define empty array
     if [ -z "${ALLOWED_FLAGS+x}" ]; then
         ALLOWED_FLAGS=()
     fi
@@ -29,6 +29,10 @@ validate_positional_args() {
         if [ -z "$arg" ]; then
             IDX=$((IDX+1))
             continue
+        fi
+        # Set REQUIRES_OUTPUT if arg matches
+        if [[ "$arg" == "-o" || "$arg" == "--output" || "$arg" == "--dry" ]]; then
+            REQUIRES_OUTPUT=1
         fi
         found=0
         for flag in "${ALLOWED_FLAGS[@]}"; do
@@ -236,3 +240,4 @@ export -f check_prerequisites join get_duplicate_external_ids
 export -f extract_template_properties init_template_properties_array
 export -f validate_positional_args
 export -f warn error info success
+export REQUIRES_OUTPUT
