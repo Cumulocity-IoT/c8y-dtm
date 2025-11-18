@@ -10,6 +10,9 @@ source "$(dirname "$0")/../_shared/constants"
 
 set -e
 
+LATEST_VALUE_CATEGORY="measurement.series.latestvalue"
+DTM_CONFIG_KEY="assets.linkedSeries.tenantOptionForLatestValues.mode"
+
 help() {
     cat <<EOF
 Manage tenant options of category measurement.series.latestvalue.
@@ -52,7 +55,7 @@ examples() {
 Examples:
   # Use auto mode to align latest value options with current DTM configuration
   c8y dtm admin latestvalue-option --auto --workers 10 --force
-  
+
   # Clear all $LATEST_VALUE_CATEGORY tenant options for the latest value category
   c8y dtm admin latestvalue-option --clear
 
@@ -73,8 +76,6 @@ EOF
     exit 0
 }
 
-LATEST_VALUE_CATEGORY="measurement.series.latestvalue"
-DTM_CONFIG_KEY="assets.linkedSeries.tenantOptionForLatestValues.mode"
 POSITIONAL_ARGS=()
 
 CLEAR=0
@@ -85,36 +86,38 @@ AUTO_DETECT=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --auto)
-          AUTO_DETECT=1
-          ;;
-        -h|--help)
-          help
-          ;;
-        -a|--enable-all|--set-all)
-          ENABLE_ALL=1
-          ;;
-        -s|--set)
-          SET_OPTIONS=1
-          ;;
-        -g|--get)
-          GET_OPTIONS=1
-          ;;
-        --examples)
-          examples
-          ;;
-        -c|--clear)
-          CLEAR=1
-          ;;
-        *)
-          POSITIONAL_ARGS+=("$1")
-          ;;
+    --auto)
+        AUTO_DETECT=1
+        ;;
+    -h | --help)
+        help
+        ;;
+    -a | --enable-all | --set-all)
+        ENABLE_ALL=1
+        ;;
+    -s | --set)
+        SET_OPTIONS=1
+        ;;
+    -g | --get)
+        GET_OPTIONS=1
+        ;;
+    --examples)
+        examples
+        ;;
+    -c | --clear)
+        CLEAR=1
+        ;;
+    *)
+        POSITIONAL_ARGS+=("$1")
+        ;;
     esac
     shift
 done
 
 export ALLOWED_FLAGS=(
-    --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --force --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --output -o --progress --timeout --totalErrors --workers --verbose
+    --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --force --header -k --insecure -l
+    --logMessage --maxJobs --noAccept -M --noColor --noCache --output -o --progress --timeout --totalErrors
+    --workers --verbose
 )
 
 # Restore additional arguments
@@ -128,44 +131,45 @@ options=""
 if [ ! -t 0 ]; then
     options=$(cat)
     # Reconnect stdin to the terminal to make confirmation prompts work
-    exec < /dev/tty
+    exec </dev/tty
 fi
 
-current_options=$(c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" < /dev/null) 
+current_options=$(c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY")
 current_count=$(echo "$current_options" | jq -r 'keys[]' | wc -l | tr -d ' ')
-dtm_setting=$(
-    c8y tenantoptions get --category "dtm" --key "$DTM_CONFIG_KEY" --withError --silentExit --silentStatusCodes 404 < /dev/null \
-        | jq -r '.value'
+dtm_latestvalue_mode=$(
+    c8y tenantoptions get --category "dtm" --key "$DTM_CONFIG_KEY" --withError --silentExit --silentStatusCodes 404 |
+        jq -r '.value'
 )
-if is_empty_result_set "$dtm_setting"; then
-    dtm_setting="undefined"
+if is_empty_result_set "$dtm_latestvalue_mode"; then
+    dtm_latestvalue_mode="undefined"
 fi
 
 if [ "$AUTO_DETECT" = "1" ]; then
-    info "Auto mode enabled. Running actions for $dtm_setting mode ..."
-    if [ "${dtm_setting,,}" = "disabled" ]; then
+    info "Auto mode enabled. Running actions for $dtm_latestvalue_mode mode ..."
+    mode="${dtm_latestvalue_mode,,}"
+    if [ "$mode" = "disabled" ]; then
         CLEAR=1
-    elif [ "${dtm_setting,,}" = "enable_fragment" ]; then
+    elif [ "$mode" = "enable_fragment" ]; then
         ENABLE_ALL=1
         SET_OPTIONS=1
-    elif [ "${dtm_setting,,}" = "enable_all" ]; then
-        ENABLE_ALL=1  
+    elif [ "$mode" = "enable_all" ]; then
+        ENABLE_ALL=1
         CLEAR=1
-    elif [ "$dtm_setting" = "undefined" ] ; then
+    elif [ "$mode" = "undefined" ]; then
         warn "Auto mode is not supported if tenant option $DTM_CONFIG_KEY is not set."
         exit 1
-    else 
-        warn "Auto mode does not support DTM setting '$dtm_setting'. Please review and set options manually."
-        exit 1 
+    else
+        warn "Auto mode does not support DTM setting '$dtm_latestvalue_mode'. Please review and set options manually."
+        exit 1
     fi
 else
-    info "DTM latest value mode: $dtm_setting"
+    info "DTM latest value mode: $dtm_latestvalue_mode"
 fi
 
 if [ "$current_count" -gt 1000 ]; then
-   warn "$LATEST_VALUE_CATEGORY - $current_count fragments. Review performance implications."
-else 
-   info "$LATEST_VALUE_CATEGORY - $current_count fragments."
+    warn "$LATEST_VALUE_CATEGORY - $current_count fragments. Review performance implications."
+else
+    info "$LATEST_VALUE_CATEGORY - $current_count fragments."
 fi
 
 if [ "$GET_OPTIONS" = "1" ]; then
@@ -175,33 +179,33 @@ fi
 if [ "$CLEAR" = "1" ]; then
     info "Clearing all tenant options in category $LATEST_VALUE_CATEGORY ..."
     result=$(
-        c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" \
-            | jq -r 'keys[] | @uri | @uri' \
-            | c8y tenantoptions delete --category $LATEST_VALUE_CATEGORY "${C8Y_FLAGS[@]}"
+        c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" |
+            jq -r 'keys[] | @uri | @uri' |
+            c8y tenantoptions delete --category $LATEST_VALUE_CATEGORY "${C8Y_FLAGS[@]}"
     )
     if [ "$REQUIRES_OUTPUT" -eq 1 ] && ! [ -z "$result" ]; then
-        echo "$result" 
+        echo "$result"
     fi
 fi
 
 if [ "$SET_OPTIONS" = "1" ] && is_not_empty_result_set "$options"; then
     info "Setting tenant options in category $LATEST_VALUE_CATEGORY from input ..."
     result=$(
-        echo "$options" \
-            | jq -c 'to_entries[] | (.key)' \
-            | c8y tenantoptions create --category $LATEST_VALUE_CATEGORY  --value "" "${C8Y_FLAGS[@]}"
+        echo "$options" |
+            jq -c 'to_entries[] | (.key)' |
+            c8y tenantoptions create --category $LATEST_VALUE_CATEGORY --value "" "${C8Y_FLAGS[@]}"
     )
     if [ "$REQUIRES_OUTPUT" -eq 1 ] && ! [ -z "$result" ]; then
-        echo "$result" 
+        echo "$result"
     fi
 fi
 
 if [ "$ENABLE_ALL" = "1" ]; then
     info "Enabling latest value for all series by adding '*' for category $LATEST_VALUE_CATEGORY ..."
     result=$(
-      c8y tenantoptions create --category "$LATEST_VALUE_CATEGORY" --key "*" --value "" "${C8Y_FLAGS[@]}"
+        c8y tenantoptions create --category "$LATEST_VALUE_CATEGORY" --key "*" --value "" "${C8Y_FLAGS[@]}"
     )
     if [ "$REQUIRES_OUTPUT" -eq 1 ] && ! [ -z "$result" ]; then
-        echo "$result" 
+        echo "$result"
     fi
 fi
