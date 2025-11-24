@@ -5,81 +5,13 @@ group:
   name: assets
   description: Manage Assets
 commands:
-  - name: detail
-    description: Retrieves an existing asset.
-    method: GET
-    path: service/dtm/assets/{assetId}
-    pathParameters:
-      - name: assetId
-        type: string
-        description: assetId identifier
-        pipeline: true
-        pipelineAliases:
-          - id
-          - assetId
-          - asset.id
-          - source.id
-    queryParameters:
-      - name: withLinkedSeries
-        type: boolean
-        description: Indicates the resource to add the c8y_LinkedSeries fragment in the response.
-        required: false
-      - name: withSubAssets
-        type: boolean
-        description: Indicates the resource to add the sub-assets in the response.
-        required: false
-      - name: withLatestValues
-        type: boolean
-        description: Indicates the resource to fetch the latest values for this Asset and the name of the Source Devices.
-        required: false
-  - name: update
-    description: Updates an existing asset.
-    method: PUT
-    path: service/dtm/assets/{assetId}
-    descriptionLong: >-
-      All properties of the asset can be updated, including name, type, c8y_ExternalId, and fragments - except the id.
-      Missing properties in the request body will not be removed but stay unchanged. Fragments, however, will be
-      replaced completely, so missing properties in a fragment will be removed. If you want to remove a fragment, you
-      have to explicitly set it to null. If the c8y_ExternalId is different to the existing Asset, it will be updated
-      accordingly. If the new c8y_ExternalId already exists, a conflict error will be returned. Required user role:
-      ROLE_DIGITAL_TWIN_ASSETS_UPDATE AND ROLE_INVENTORY_ADMIN
-    pathParameters:
-      - name: assetId
-        type: string
-        description: assetId identifier
-        pipeline: true
-        pipelineAliases:
-          - id
-          - assetId
-          - asset.id
-          - source.id
-    queryParameters:
-      - name: fetchTypeFromSource
-        type: boolean
-        description: >-
-          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
-          Measurements.
-        required: false
-  - name: delete
-    description: Deletes an existing asset.
-    method: DELETE
-    path: service/dtm/assets/{assetId}
-    descriptionLong: 'Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN AND ROLE_INVENTORY_ADMIN'
-    pathParameters:
-      - name: assetId
-        type: string
-        description: assetId identifier
-        pipeline: true
-        pipelineAliases:
-          - id
-          - assetId
-          - asset.id
-          - source.id
   - name: list
-    description: Retrieves all assets registered in your tenant.
+    description: Retrieve assets.
     method: GET
-    path: service/dtm/assets
-    descriptionLong: The query parameter supports a flexible syntax for filtering and ordering results.
+    path: assets
+    descriptionLong: >-
+      Retrieves all assets registered in your tenant. The query parameter supports a flexible syntax for filtering and
+      ordering results.
     queryParameters:
       - name: query
         type: string
@@ -106,20 +38,25 @@ commands:
         description: pageSize query parameter
         required: false
   - name: create
-    description: Creates an Asset, for example, a room within a building.
+    description: Create or update an asset.
     method: POST
-    path: service/dtm/assets
+    path: assets
     descriptionLong: >
+      Creates or updates an Asset, for example, a room within a building.
+
       In general, each asset may consist of:
       •   The name of the asset.
       •   The most specific type of the asset.
       •   Fragments with specific meanings, for example, c8y_Position, c8y_SupportedOperations.
       •   Fragment c8y_ExternalId which uniquely identifies the asset in an external system.
-
-      If a value for the property id is provided, it will be ignored.If an asset with the given external ID exists
-      and X-Upsert-Mode is true, the asset will be updated. If an asset with the given external ID exists and
-      X-Upsert-Mode is false, a conflict error will be returned. If no asset with the given external ID exists, a new
-      asset will be created (independent of the X-Upsert-Mode).
+      
+      If a value for the property id is provided, it will be ignored. 
+      
+      If an asset with the given external ID exists and X-Upsert-Mode is true, the asset will be 
+      updated and the response code will be 200. If an asset with the given external ID exists
+      and X-Upsert-Mode is false, a conflict error will be returned. If no asset with the given
+      external ID exists, a new asset will be created (independent of the X-Upsert-Mode) and the 
+      response code will be 201.
     queryParameters:
       - name: fetchTypeFromSource
         type: boolean
@@ -132,13 +69,28 @@ commands:
         type: boolean
         description: Determines if an existing Asset should be updated or not.
         required: false
-  - name: getByExternalId
-    description: Retrieves an Asset by its external ID of type c8y_ExternalId.
+  - name: count
+    description: Get count of assets.
     method: GET
-    path: service/dtm/assets/externalIds/{externalId}
+    path: assets/count
+    descriptionLong: Counts all assets on your tenant. You can optionally apply the filters query and onlyRoots.
+    queryParameters:
+      - name: query
+        type: string
+        description: Use the $filter keyword to specify filtering criteria.
+        required: false
+      - name: onlyRoots
+        type: boolean
+        description: onlyRoots query parameter
+        required: false
+  - name: getAssetByExternalId
+    description: Retrieve an asset by its external ID.
+    method: GET
+    path: assets/externalIds/{externalId}
     descriptionLong: >-
-      This endpoint allows clients to look up assets using identifiers from external systems. It resolves the external
-      ID to a ManagedObject and returns the corresponding Asset if found.
+      Retrieves an Asset by its external ID of type c8y_ExternalId. This endpoint allows clients to look up assets using
+      identifiers from external systems. It resolves the external ID to a ManagedObject and returns the corresponding
+      Asset if found.
     pathParameters:
       - name: externalId
         type: string
@@ -158,17 +110,248 @@ commands:
         type: boolean
         description: Indicates the resource to add the sub-assets in the response.
         required: false
-  - name: count
-    description: Counts all assets on your tenant.
+  - name: delete
+    description: Delete an existing asset.
+    method: DELETE
+    path: assets/{assetId}
+    descriptionLong: 'Deletes an existing asset. Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN AND ROLE_INVENTORY_ADMIN'
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+  - name: detail
+    description: Retrieve an existing asset.
     method: GET
-    path: service/dtm/assets/count
-    descriptionLong: You can optionally apply the filters query and onlyRoots.
+    path: assets/{assetId}
+    descriptionLong: Retrieves an existing asset.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: withLinkedSeries
+        type: boolean
+        description: Indicates the resource to add the c8y_LinkedSeries fragment in the response.
+        required: false
+      - name: withSubAssets
+        type: boolean
+        description: Indicates the resource to add the sub-assets in the response.
+        required: false
+      - name: withLatestValues
+        type: boolean
+        description: Indicates the resource to fetch the latest values for this Asset and the name of the Source Devices.
+        required: false
+  - name: updateAsset
+    description: Update an existing asset.
+    method: PUT
+    path: assets/{assetId}
+    descriptionLong: >-
+      Updates an existing asset. All properties of the asset can be updated, including name, type, c8y_ExternalId, and
+      fragments - except the id. Missing properties in the request body will not be removed but stay unchanged.
+      Fragments, however, will be replaced completely, so missing properties in a fragment will be removed. If you want
+      to remove a fragment, you have to explicitly set it to null. If the c8y_ExternalId is different to the existing
+      Asset, it will be updated accordingly. If the new c8y_ExternalId already exists, a conflict error will be
+      returned. Required user role: ROLE_DIGITAL_TWIN_ASSETS_UPDATE AND ROLE_INVENTORY_ADMIN
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: fetchTypeFromSource
+        type: boolean
+        description: >-
+          Indicates the resource to fetch the Measurement type associated with the linked device, derived from recorded
+          Measurements.
+        required: false
+  - name: getChildDevices
+    description: Retrieve child devices of an asset.
+    method: GET
+    path: assets/{assetId}/devices
+    descriptionLong: Retrieves child devices of an asset. Fetches all child devices of the parent asset specified by assetId.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
     queryParameters:
       - name: query
         type: string
         description: Use the $filter keyword to specify filtering criteria.
         required: false
-      - name: onlyRoots
-        type: boolean
-        description: onlyRoots query parameter
+      - name: currentPage
+        type: integer
+        description: currentPage query parameter
         required: false
+      - name: pageSize
+        type: integer
+        description: pageSize query parameter
+        required: false
+  - name: unassignDevice
+    description: Remove a device from an asset.
+    method: DELETE
+    path: assets/{assetId}/devices/{deviceId}
+    descriptionLong: >-
+      Removes a device from an asset. Removes the association of the specified device, identified by its ID, with an
+      asset. If one of the IDs does not exist, the operation responds with HTTP 404. If the managed object for the
+      assetId is not an asset or of the managed object for the deviceId is not a Device, the operation responds with
+      HTTP 422. Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN AND ROLE_INVENTORY_ADMIN
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: deviceId
+        type: string
+        description: deviceId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - deviceId
+          - device.id
+          - source.id
+  - name: assignDevice
+    description: Assign a device to an asset.
+    method: POST
+    path: assets/{assetId}/devices/{deviceId}
+    descriptionLong: >-
+      Assigns a device to an asset. Associates the specified device, identified by its ID, with an asset. The device
+      must already exist. If one of the IDs does not exist, the operation responds with HTTP 404. If the managed object
+      for the assetId is not an asset or of the managed object for the deviceId is not a Device, the operation responds
+      with HTTP 422. Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN AND ROLE_INVENTORY_ADMIN
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: deviceId
+        type: string
+        description: deviceId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - deviceId
+          - device.id
+          - source.id
+  - name: getSubAssets
+    description: Retrieve sub-assets of an asset.
+    method: GET
+    path: assets/{assetId}/subAssets
+    descriptionLong: >-
+      Retrieves sub-assets of an asset. Fetches all sub-assets of the parent asset specified by assetId. You can
+      optionally apply the filter query.
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+    queryParameters:
+      - name: query
+        type: string
+        description: Use the $filter keyword to specify filtering criteria.
+        required: false
+      - name: withLinkedSeries
+        type: boolean
+        description: Indicates the resource to add the c8y_LinkedSeries fragment in the response.
+        required: false
+      - name: currentPage
+        type: integer
+        description: currentPage query parameter
+        required: false
+      - name: pageSize
+        type: integer
+        description: pageSize query parameter
+        required: false
+  - name: unassignSubAsset
+    description: Remove a sub-asset from its parent asset.
+    method: DELETE
+    path: assets/{assetId}/subAssets/{subAssetId}
+    descriptionLong: >-
+      Removes a sub-asset from its parent asset. Removes the association of the specified asset, identified by its ID,
+      with a parent asset. If one of the IDs does not exist, the operation responds with HTTP 404. If one of the IDs is
+      not an Asset, the operation responds with HTTP 422. Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN AND
+      ROLE_INVENTORY_ADMIN
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: subAssetId
+        type: string
+        description: subAssetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - subAssetId
+          - subAsset.id
+          - source.id
+  - name: assignSubAsset
+    description: Assign an asset as a sub-asset.
+    method: POST
+    path: assets/{assetId}/subAssets/{subAssetId}
+    descriptionLong: >-
+      Assigns an asset as a sub-asset. Associates the specified asset, identified by its ID, with a parent asset. The
+      sub-asset must already exist. If one of the IDs does not exist, the operation responds with HTTP 404. If one of
+      the IDs is not an Asset, the operation responds with HTTP 422. Required user role: ROLE_DIGITAL_TWIN_ASSETS_ADMIN
+      AND ROLE_INVENTORY_ADMIN
+    pathParameters:
+      - name: assetId
+        type: string
+        description: assetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - assetId
+          - asset.id
+          - source.id
+      - name: subAssetId
+        type: string
+        description: subAssetId identifier
+        pipeline: true
+        pipelineAliases:
+          - id
+          - subAssetId
+          - subAsset.id
+          - source.id
