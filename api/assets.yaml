@@ -153,7 +153,7 @@ commands:
         type: boolean
         description: Indicates the resource to fetch the latest values for this Asset and the name of the Source Devices.
         required: false
-  - name: updateAsset
+  - name: update
     description: Update an existing asset.
     method: PUT
     path: assets/{assetId}
