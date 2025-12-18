@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+
+# Check and fix character encoding issues in assets
+
+# import shared functions
+
+# shellcheck source=/dev/null
+source "$(dirname "$0")/../_shared/helper"
+source "$(dirname "$0")/../_shared/constants"
+
+set -e
+
+help() {
+    cat <<EOF
+Check and fix character encoding issues in assets.
+
+Usage:
+  c8y dtm admin encoding [options]
+
+Description:
+  This command helps detect and fix character encoding issues in assets,
+  particularly Latin-1 to UTF-8 conversion issues (e.g., Ã characters).
+
+  Common encoding issues detected:
+    - Latin-1 to UTF-8 double-encoding (Ã followed by non-ASCII)
+    - Malformed UTF-8 sequences
+    - Windows-1252 encoding issues
+
+Flags:
+  -f, --fix           Fix detected encoding issues by updating assets
+      --query         Filter assets using a query (e.g., "name eq '*Ã*'")
+
+  -h, --help          Show this help message
+      --examples      Show examples
+EOF
+    exit 0
+}
+
+examples() {
+    cat <<EOF
+Examples:
+  # Check all assets for encoding issues
+  c8y dtm admin encoding
+
+  # Check assets matching a specific name pattern
+  c8y dtm admin encoding --query "name eq '*Ã*'"
+
+  # Dry run to see what would be fixed
+  c8y dtm admin encoding --fix --dry
+
+  # Fix encoding issues with parallel workers
+  c8y dtm admin encoding --fix --workers 10
+
+EOF
+    exit 0
+}
+
+# Detect encoding issues using grep
+# Returns 0 if encoding issue detected, 1 otherwise
+detect_encoding_issue() {
+    local text="$1"
+    if [ -z "$text" ]; then
+        return 1
+    fi
+    
+    if command -v grep > /dev/null && grep --help 2>&1 | grep -q -- '-P'; then
+        # GNU grep with -P support
+        echo "$text" | grep -qP 'Ã[\x80-\xFF]'
+    else
+        # Fallback for BSD grep (macOS)
+        # Ã character is suspicious in most contexts (indicates Latin-1 to UTF-8 double-encoding)
+        # This is a simpler heuristic: presence of Ã usually indicates encoding issues
+        echo "$text" | grep -qF 'Ã'
+    fi
+}
+
+# Fix Latin-1 to UTF-8 double-encoding
+fix_latin1_to_utf8() {
+    local text="$1"
+    if [ -z "$text" ]; then
+        echo "$text"
+        return
+    fi
+    
+    # The text is UTF-8 that was incorrectly decoded as Latin-1 and re-encoded as UTF-8
+    # So we need to: encode as Latin-1 (to get original bytes), then decode as UTF-8
+    local fixed="$text"
+    
+    # Try Perl first (commonly pre-installed on Unix/macOS systems)
+    if command -v perl >/dev/null 2>&1; then
+        fixed=$(printf '%s' "$text" | perl -CS -MEncode=decode,encode -ne 'print decode("UTF-8", encode("iso-8859-1", $_))' 2>/dev/null) || fixed="$text"
+    # Fallback to recode if available
+    elif command -v recode >/dev/null 2>&1; then
+        fixed=$(printf '%s' "$text" | recode utf8..latin1 | recode latin1..utf8 2>/dev/null) || fixed="$text"
+    # Python fallback
+    elif command -v python3 >/dev/null 2>&1; then
+        fixed=$(python3 -c "import sys; print(sys.argv[1].encode('latin-1').decode('utf-8'), end='')" "$text" 2>/dev/null) || fixed="$text"
+    elif command -v python >/dev/null 2>&1; then
+        fixed=$(python -c "import sys; print sys.argv[1].encode('latin-1').decode('utf-8')," "$text" 2>/dev/null) || fixed="$text"
+    else
+        # No suitable tool found, return original
+        warn "Warning: No tool available to fix encoding (perl, recode, or python required)"
+    fi
+    
+    echo "$fixed"
+}
+
+check_asset_encoding() {
+    local asset="$1"
+    
+    # First, do a quick check on the entire asset JSON
+    if ! detect_encoding_issue "$asset"; then
+        return 1
+    fi
+    
+    # Encoding issue detected somewhere - now find ALL fields with issues
+    local found_issues=0
+    
+    # This uses jq to walk through the entire object and find all strings with their paths
+    while IFS='|' read -r field_path value; do
+        if [ -z "$value" ] || [ "$value" = "null" ]; then
+            continue
+        fi
+        
+        # Skip system/URL fields that commonly contain encoding-like patterns
+        if [[ "$field_path" =~ ^(self|.*\.self|.*\.references\[.*\]\.self|owner|creationTime|lastUpdated)$ ]]; then
+            continue
+        fi
+        
+        # Check if this specific value has encoding issue
+        if detect_encoding_issue "$value"; then
+            # Output each matched field on its own line
+            echo "$field_path|$value"
+            found_issues=1
+        fi
+    done < <(echo "$asset" | jq -r '
+        paths(type == "string") as $p |
+        ($p | map(tostring) | join(".")) as $path |
+        getpath($p) as $val |
+        "\($path)|\($val)"
+    ' 2>/dev/null)
+    
+    if [ "$found_issues" -eq 1 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+
+
+POSITIONAL_ARGS=()
+
+FIX_ENCODING=0
+FILTER_QUERY=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -h | --help)
+        help
+        ;;
+    --examples)
+        examples
+        ;;
+    -f | --fix)
+        FIX_ENCODING=1
+        ;;
+    --query)
+        FILTER_QUERY="$2"
+        shift
+        ;;
+    *)
+        POSITIONAL_ARGS+=("$1")
+        ;;
+    esac
+    shift
+done
+
+export ALLOWED_FLAGS=(
+    --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --force --header -k --insecure -l
+    --logMessage --maxJobs --noAccept -M --noColor --noCache --output -o --progress --timeout --totalErrors
+    --workers --verbose
+)
+
+# Restore additional arguments
+set -- "${POSITIONAL_ARGS[@]}"
+
+validate_positional_args "$@"
+
+check_prerequisites
+
+info "Loading assets from platform..."
+
+# Build query for loading assets
+c8y_args=(
+    inventory find 
+    --includeAll 
+    --fragmentType "c8y_IsAsset"
+    --output json
+)
+
+if [ -n "$FILTER_QUERY" ]; then
+    c8y_args+=(--query "$FILTER_QUERY")
+fi
+
+# Load all assets
+assets=$(c8y "${c8y_args[@]}" 2>/dev/null)
+
+if is_empty_result_set "$assets"; then
+    info "No assets found."
+    exit 0
+fi
+
+total_assets=$(echo "$assets" | wc -l | tr -d ' ')
+info "Loaded $total_assets assets."
+
+# Check each asset for encoding issues
+info "Checking assets for encoding issues..."
+
+# Arrays to store assets and their problematic fields
+declare -a assets_with_issues
+declare -A asset_problem_fields
+issue_count=0
+
+while IFS= read -r asset; do
+    if [ -z "$asset" ]; then
+        continue
+    fi
+    
+    # Capture all problematic fields from check_asset_encoding
+    problem_fields=$(check_asset_encoding "$asset") || true
+    check_result=$?
+    
+    if [ $check_result -eq 0 ] && [ -n "$problem_fields" ]; then
+        asset_id=$(echo "$asset" | jq -r '.id')
+        
+        # Store the asset and its problematic fields
+        assets_with_issues+=("$asset")
+        asset_problem_fields["$asset_id"]="$problem_fields"
+        issue_count=$((issue_count + 1))
+        
+        asset_name=$(echo "$asset" | jq -r '.name // "N/A"')
+        
+        # Display all problematic fields for this asset
+        while IFS='|' read -r field_path field_value; do
+            if [ -n "$field_path" ]; then
+                warn "Encoding issue in asset $asset_id - $asset_name [$field_path]: $field_value"
+            fi
+        done <<< "$problem_fields"
+    fi
+done <<< "$assets"
+
+if [ "$issue_count" -eq 0 ]; then
+    success "No encoding issues found in $total_assets assets."
+    exit 0
+fi
+
+warn "Found encoding issues in $issue_count out of $total_assets assets."
+
+if [ "$FIX_ENCODING" -eq 0 ]; then
+    info "Use --fix flag to fix the encoding issues."
+    exit 0
+fi
+
+# Fix encoding issues
+info "Fixing encoding issues in $issue_count assets..."
+
+fixed_count=0
+error_count=0
+
+for asset in "${assets_with_issues[@]}"; do
+    asset_id=$(echo "$asset" | jq -r '.id')
+    asset_name=$(echo "$asset" | jq -r '.name // "N/A"')
+    
+    # Fix encoding in asset
+    info "Fixing asset: $asset_id - $asset_name"
+    
+    # Prepare update payload - remove read-only fields but keep id for pipeline
+    update_payload=$(echo "$asset" | jq 'del(.self, .owner, .creationTime, .lastUpdated)')
+    
+    # Get the problematic fields we already identified for this asset
+    problem_fields="${asset_problem_fields[$asset_id]}"
+    
+    # Fix all problematic fields using the stored information
+    fixed_strings=()
+    while IFS='|' read -r json_path value; do
+        if [ -z "$json_path" ] || [ -z "$value" ]; then
+            continue
+        fi
+        
+        # Fix the encoding
+        fixed_value=$(fix_latin1_to_utf8 "$value")
+        
+        if [ "$value" != "$fixed_value" ]; then
+            # Store the path and fixed value for jq update
+            fixed_strings+=("$json_path|$fixed_value")
+            info "  Fixed $json_path: $value -> $fixed_value"
+        fi
+    done <<< "$problem_fields"
+    
+    # Apply all fixes using jq
+    for fix_spec in "${fixed_strings[@]}"; do
+        json_path=$(echo "$fix_spec" | cut -d'|' -f1)
+        fixed_value=$(echo "$fix_spec" | cut -d'|' -f2-)
+        
+        # Convert dot-notation path to jq path array, e.g. "address.city" -> ["address", "city"]
+        jq_path=$(jq -cn --arg path "$json_path" '$path | split(".")')
+        
+        update_payload=$(echo "$update_payload" | jq --argjson path "$jq_path" --arg value "$fixed_value" '
+            setpath($path; $value)
+        ')
+    done
+    
+    # Update the asset
+    result=$(
+        echo "$update_payload" |
+            c8y dtm assets update --template input.value "${C8Y_FLAGS[@]}" 2>&1
+    ) || {
+        error "Failed to update asset:" "$asset_id - $asset_name"
+        error_count=$((error_count + 1))
+        continue
+    }
+    
+    if [ "$REQUIRES_OUTPUT" -eq 1 ] && [ -n "$result" ]; then
+        echo "$result"
+    fi
+    
+    fixed_count=$((fixed_count + 1))
+done
+
+if [ "$error_count" -gt 0 ]; then
+    warn "Fixed $fixed_count assets, $error_count errors encountered."
+    exit 1
+else
+    success "Successfully fixed encoding issues in $fixed_count assets."
+fi
+
+info "Done."
