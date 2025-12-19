@@ -58,25 +58,6 @@ EOF
     exit 0
 }
 
-# Detect encoding issues using grep
-# Returns 0 if encoding issue detected, 1 otherwise
-detect_encoding_issue() {
-    local text="$1"
-    if [ -z "$text" ]; then
-        return 1
-    fi
-    
-    if command -v grep > /dev/null && grep --help 2>&1 | grep -q -- '-P'; then
-        # GNU grep with -P support
-        echo "$text" | grep -qP 'Ã[\x80-\xFF]'
-    else
-        # BSD grep (macOS)
-        # Ã character is suspicious in most contexts (indicates Latin-1 to UTF-8 double-encoding)
-        # Assumes the presence of Ã indicates encoding issues
-        echo "$text" | grep -qF 'Ã'
-    fi
-}
-
 # Fix Latin-1 to UTF-8 double-encoding for batch processing
 # jq, jsonnet and iconv do not work as the required conversion needs byte level manipulation
 # Input: JSON lines with format: {"id":"123","name":"asset","field":"c8y_Notes","value":"text"}
@@ -240,8 +221,6 @@ asset_fixes=$(echo "$fixed_fields" | jq -s 'group_by(.id) | map({id: .[0].id, na
 update_payloads=""
 while IFS= read -r fix_group; do
     asset_id=$(echo "$fix_group" | jq -r '.id')
-    asset_name=$(echo "$fix_group" | jq -r '.name')
-    info "Fixing: $asset_id - $asset_name"
     
     # Build minimal update payload with only id and changed fields
     update_payload=$(echo "$fix_group" | jq --arg id "$asset_id" '{
