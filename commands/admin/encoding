@@ -255,9 +255,9 @@ while IFS= read -r fix_group; do
     )')
     
     # Show what was fixed/removed
-    info_action="Fixed"
+    info_action="Fix"
     if [ "$REMOVE_FIELDS" -eq 1 ]; then
-        info_action="Removed"
+        info_action="Remove"
     fi
     echo "$fix_group" | jq -r '.fixes[] | "'"$info_action \(.field)"'"' | while IFS= read -r fix_msg; do
         info "  $asset_id: $fix_msg"
