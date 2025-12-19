@@ -28,6 +28,7 @@ Description:
 
 Flags:
   -f, --fix           Fix detected encoding issues by updating assets
+  -r, --remove        Remove broken fields by setting them to null
       --query         Filter assets using a query (e.g., "name eq '*Ã*'")
 
   -h, --help          Show this help message
@@ -50,6 +51,9 @@ Examples:
 
   # Fix encoding issues with parallel workers
   c8y dtm admin encoding --fix --workers 10
+
+  # Remove broken fields by setting them to null
+  c8y dtm admin encoding --remove --dry
 
   c8y dtm admin encoding --query "id eq '99567200'" --fix --force --output json 2>/dev/null | \ 
         c8y util show --select id,c8y_Notes
@@ -110,6 +114,7 @@ for line in sys.stdin:
 POSITIONAL_ARGS=()
 
 FIX_ENCODING=0
+REMOVE_FIELDS=0
 FILTER_QUERY=""
 
 while [ $# -gt 0 ]; do
@@ -122,6 +127,9 @@ while [ $# -gt 0 ]; do
         ;;
     -f | --fix)
         FIX_ENCODING=1
+        ;;
+    -r | --remove)
+        REMOVE_FIELDS=1
         ;;
     --query)
         FILTER_QUERY="$2"
@@ -203,13 +211,26 @@ done
 
 warn "Found encoding issues in $affected_asset_count out of $total_assets assets ($issue_count total fields)."
 
-if [ "$FIX_ENCODING" -eq 0 ]; then
-    info "Use --fix flag to fix the encoding issues."
+if [ "$FIX_ENCODING" -eq 0 ] && [ "$REMOVE_FIELDS" -eq 0 ]; then
+    info "Use --fix flag to fix the encoding issues or --remove to remove broken fields."
     exit 0
 fi
 
-# Step 2: Fix all encoding issues in ONE batch process call
-fixed_fields=$(echo "$fields_to_fix" | fix_encoding_batch)
+if [ "$FIX_ENCODING" -eq 1 ] && [ "$REMOVE_FIELDS" -eq 1 ]; then
+    error "Cannot use both --fix and --remove flags together."
+    exit 1
+fi
+
+# Step 2: Fix or remove encoding issues
+if [ "$REMOVE_FIELDS" -eq 1 ]; then
+    info "Removing $issue_count broken fields..."
+    # Set fixed_value to null for removal
+    fixed_fields=$(echo "$fields_to_fix" | jq -c '. + {fixed_value: null}')
+else
+    info "Fixing $issue_count encoding issues in one batch..."
+    # Fix encoding using batch processor
+    fixed_fields=$(echo "$fields_to_fix" | fix_encoding_batch)
+fi
 
 # Step 3: Group fixes by asset and apply them
 info "Applying fixes to $affected_asset_count assets..."
@@ -233,9 +254,13 @@ while IFS= read -r fix_group; do
         )
     )')
     
-    # Show what was fixed
-    echo "$fix_group" | jq -r '.fixes[] | "  Fixed \(.field): \(.original) -> \(.fixed)"' | while IFS= read -r fix_msg; do
-        info "$fix_msg"
+    # Show what was fixed/removed
+    info_action="Fixed"
+    if [ "$REMOVE_FIELDS" -eq 1 ]; then
+        info_action="Removed"
+    fi
+    echo "$fix_group" | jq -r '.fixes[] | "'"$info_action \(.field)"'"' | while IFS= read -r fix_msg; do
+        info "  $asset_id: $fix_msg"
     done
     
     # Collect the update payload
@@ -258,7 +283,11 @@ if [ -n "$update_payloads" ]; then
         echo "$result"
     fi
 
-    success "Successfully fixed encoding issues in $affected_asset_count assets."
+    if [ "$REMOVE_FIELDS" -eq 1 ]; then
+        success "Successfully removed broken fields from $affected_asset_count assets."
+    else
+        success "Successfully fixed encoding issues in $affected_asset_count assets."
+    fi
 fi
 
 info "Done."
