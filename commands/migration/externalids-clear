@@ -22,7 +22,6 @@ Description:
   Input can be piped (NDJSON) or loaded from inventory.
 
 Flags:
-Flags:
   -f, --filter <query>          Query to filter assets (e.g., "type eq 'MyAssetType'").
                                 default: "not(has(${EXTERNAL_ID_FRAGMENT}))"
   -c, --clear-fragment          Sets c8y_ExternalId fragment to null for all assets
