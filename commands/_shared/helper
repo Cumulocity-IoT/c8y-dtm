@@ -151,7 +151,7 @@ is_not_empty_result_set() {
 }
 
 load_all_assets() {
-    local select_fields=("id" "self" "c8y_ExternalId")
+    local select_fields=("id" "self" "c8y_ExternalId" "c8y_LinkedSeries")
     local required_fields=()
 
     # Add template properties to select_fields (only unique ones)
