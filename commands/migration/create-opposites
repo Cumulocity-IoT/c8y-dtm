@@ -12,11 +12,6 @@ source "$(dirname "$0")/../_shared/constants"
 # Stop on unexpected errors
 set -e
 
-# Logging helper functions (output to stderr)
-warn() { echo -e "\033[1;33mWARN  $*\033[0m" >&2; }
-error() { echo -e "\033[1;31mERROR $*\033[0m" >&2; }
-info() { echo -e "INFO  $*" >&2; }
-success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
 
 # Help text
 help() {
@@ -28,13 +23,13 @@ Usage:
 
 Description:
     Creates opposite references for all Assets that have the c8y_LinkedSeries fragment. 
-    For each linked series, an opposite reference will be created using the 
+    For each linked series, an opposite reference will be created as ChildAddition of the linked device using the 
     /assets/{id}/linkedSeries/{fragment}/{series}/opposite endpoint.
 
 
 Flags:
     -h, --help                 Show this help message
-    --removeMissingSourceId    If set, remove non-existing sourceId from opposite references. 
+    --removeMissingSourceId    If set, remove non-existing source.id from the c8y_LinkedSeries. 
 
 Examples:
     c8y dtm migration create-opposites --removeMissingSourceId
