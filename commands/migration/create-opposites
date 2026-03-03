@@ -21,38 +21,43 @@ success() { echo -e "\033[1;32mSUCCESS $*\033[0m" >&2; }
 # Help text
 help() {
     cat <<EOF
-Bla bla bla bla create-opposites bla 
+Create Opposite references for DTM Assets with c8y_LinkedSeries fragment.
 
 Usage:
     c8y dtm migration create-opposites [args...]
 
 Description:
-    Even more bla bla bla bla...
+    Creates opposite references for all Assets that have the c8y_LinkedSeries fragment. 
+    For each linked series, an opposite reference will be created using the 
+    /assets/{id}/linkedSeries/{fragment}/{series}/opposite endpoint.
 
 
 Flags:
     -h, --help                 Show this help message
+    --removeMissingSourceId    If set, remove non-existing sourceId from opposite references. 
 
 Examples:
-    TODO some of those need to be here, wonder what they'll look like.
+    c8y dtm migration create-opposites --removeMissingSourceId
 
 Requirements:
     - go-c8y-cli authenticated session
     - jq for JSON processing
-
-
 EOF
     exit 0
 }
 
 # Default values
-#TODO Yep. Will need some of that. 
+REMOVE_MISSING_SOURCE_ID=false
 
 # Parse arguments
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             help
+            ;;
+        --removeMissingSourceId)
+            REMOVE_MISSING_SOURCE_ID=true
+            shift
             ;;
         *)
             error "Unknown option: $1"
@@ -77,6 +82,35 @@ assets_with_linked_series=$(echo "$all_assets" | jq -c 'select(has("c8y_LinkedSe
 assets_with_linked_series_count=$(count_lines "$assets_with_linked_series")
 info "Found $assets_with_linked_series_count assets with linked series."
 
-success "Hello, captain!"
+#If we don't have any assets with linked series to handle, we can exit early.
+if [ "$assets_with_linked_series_count" -eq 0 ]; then
+    info "No assets with linked series to process. Exiting."
+    exit 0
+fi
+
+for asset in $(echo "$assets_with_linked_series" | jq -c '.'); do
+    asset_id=$(echo "$asset" | jq -r '.id')
+    linked_series=$(echo "$asset" | jq -c '.c8y_LinkedSeries[]')
+
+    for series in $linked_series; do
+        fragment_name=$(echo "$series" | jq -r '.fragment')
+        series_name=$(echo "$series" | jq -r '.series')
+        command="c8y api PUT /assets/$asset_id/linkedSeries/$fragment_name/$series_name/opposite"
+        if [ "$REMOVE_MISSING_SOURCE_ID" = "true" ]; then
+            command="$command?removeMissingSourceId=true"
+        fi
+        info "---------------------------------------------"
+        info "WOULD-DO: $command"
+        info "---------------------------------------------"
+        #TODO: Call command - what kind of responses will we expect to get back?
+        #Looks like 
+        #- 200, all good. 
+        #- 204, No source.id set, OR device didn't exist and we removed source.id. 
+        #- 404, Asset/Fragment/Series combo didn't exist. Warning, but continue?
+        #- 442: removeMissingSourceId was set to false, source.id is set and device doesn't exist. Warning, but continue?
+    done
+done
+
+success "Completed."
 
 exit 0
