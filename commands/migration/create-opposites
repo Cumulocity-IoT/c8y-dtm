@@ -95,24 +95,20 @@ echo "$assets_with_linked_series" | jq -c '.' | while IFS= read -r asset; do
         fragment_name=$(echo "$series" | jq -r '.fragment')
         series_name=$(echo "$series" | jq -r '.series')
 
-        command="c8y api PUT /assets/$asset_id/linkedSeries/$fragment_name/$series_name/opposite"
+        theEndpoint="/assets/$asset_id/linkedSeries/$fragment_name/$series_name/opposite"
         if [ "$REMOVE_MISSING_SOURCE_ID" = "true" ]; then
-            command="$command?removeMissingSourceId=true"
+            theEndpoint="$theEndpoint?removeMissingSourceId=true"
         fi
+        withDryRun=""
         if [ "$DRY_RUN" = "true" ]; then
-            command="$command --dry"
+            command="--dry"
         fi
-
+        
         info "---------------------------------------------"
-        info "WOULD-DO: $command"
+        info "CALLING: $command"
+        _result=$(c8y api PUT $theEndpoint $withDryRun)
         info "---------------------------------------------"
 
-        #TODO: Call command - what kind of responses will we expect to get back?
-        #Looks like 
-        #- 200, all good. 
-        #- 204, No source.id set, OR device didn't exist and we removed source.id. 
-        #- 404, Asset/Fragment/Series combo didn't exist. Warning, but continue?
-        #- 442: removeMissingSourceId was set to false, source.id is set and device doesn't exist. Warning, but continue?
     done
 done
 
