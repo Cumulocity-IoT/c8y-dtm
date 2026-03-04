@@ -61,7 +61,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         *)
-            error "Unknown option: $1"
+            error "Unknown option: $1" "See --help for usage information."
             help
             exit 1
             ;;
