@@ -57,37 +57,35 @@ while [ $# -gt 0 ]; do
         *)
             error "Unknown option: $1"
             help
+            exit 1
             ;;
     esac
 done
 
 check_prerequisites
 
-all_assets=$(load_all_assets)
+FILTER_QUERY="has(${LINKED_SERIES_FRAGMENT})"
+EXTRA_SELECT_FIELDS="${LINKED_SERIES_FRAGMENT}"
+assets_with_linked_series=$(load_all_assets)
 
-if is_empty_result_set "$all_assets" ; then
+if is_empty_result_set "$assets_with_linked_series" ; then
     info "No assets to handle. Exiting."
     exit 0
 fi
 
-total_collected=$(count_lines "$all_assets")
-info "Processing $total_collected assets..."
-
-assets_with_linked_series=$(echo "$all_assets" | jq -c 'select(has("c8y_LinkedSeries") and .c8y_LinkedSeries != null and (.c8y_LinkedSeries | length > 0))')
-assets_with_linked_series_count=$(count_lines "$assets_with_linked_series")
-info "Found $assets_with_linked_series_count assets with linked series."
+total_collected=$(count_lines "$assets_with_linked_series")
+info "Server returned $total_collected assets with linked series..."
 
 #If we don't have any assets with linked series to handle, we can exit early.
-if [ "$assets_with_linked_series_count" -eq 0 ]; then
+if [ "$total_collected" -le 1 ]; then
     info "No assets with linked series to process. Exiting."
     exit 0
 fi
 
-for asset in $(echo "$assets_with_linked_series" | jq -c '.'); do
+echo "$assets_with_linked_series" | jq -c '.' | while IFS= read -r asset; do
     asset_id=$(echo "$asset" | jq -r '.id')
-    linked_series=$(echo "$asset" | jq -c '.c8y_LinkedSeries[]')
 
-    for series in $linked_series; do
+    echo "$asset" | jq -c '.c8y_LinkedSeries[]' | while IFS= read -r series; do
         fragment_name=$(echo "$series" | jq -r '.fragment')
         series_name=$(echo "$series" | jq -r '.series')
         command="c8y api PUT /assets/$asset_id/linkedSeries/$fragment_name/$series_name/opposite"

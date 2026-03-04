@@ -151,8 +151,19 @@ is_not_empty_result_set() {
 }
 
 load_all_assets() {
-    local select_fields=("id" "self" "c8y_ExternalId" "c8y_LinkedSeries")
+    local select_fields=("id" "self" "c8y_ExternalId")
     local required_fields=()
+
+    # Add any extra select fields specified via environment (comma-separated, unique)
+    if [ -n "$EXTRA_SELECT_FIELDS" ]; then
+        IFS=',' read -r -a _extra_select_fields <<< "$EXTRA_SELECT_FIELDS"
+        for field in "${_extra_select_fields[@]}"; do
+            # Skip empty entries and avoid duplicates
+            if [ -n "$field" ] && [[ ! " ${select_fields[*]} " == *" ${field} "* ]]; then
+                select_fields+=("$field")
+            fi
+        done
+    fi
 
     # Add template properties to select_fields (only unique ones)
     for prop in "${TEMPLATE_PROPERTIES[@]}"; do
