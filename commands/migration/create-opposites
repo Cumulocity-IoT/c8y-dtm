@@ -30,6 +30,7 @@ Description:
 Flags:
     -h, --help                 Show this help message
     --removeMissingSourceId    If set, remove non-existing source.id from the c8y_LinkedSeries. 
+    --dryRun                   Show what would be done, without making any changes.
 
 Examples:
     c8y dtm migration create-opposites --removeMissingSourceId
@@ -43,6 +44,7 @@ EOF
 
 # Default values
 REMOVE_MISSING_SOURCE_ID=false
+DRY_RUN=false
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -52,6 +54,10 @@ while [ $# -gt 0 ]; do
             ;;
         --removeMissingSourceId)
             REMOVE_MISSING_SOURCE_ID=true
+            shift
+            ;;
+        --dryRun)
+            DRY_RUN=true
             shift
             ;;
         *)
@@ -88,13 +94,19 @@ echo "$assets_with_linked_series" | jq -c '.' | while IFS= read -r asset; do
     echo "$asset" | jq -c '.c8y_LinkedSeries[]' | while IFS= read -r series; do
         fragment_name=$(echo "$series" | jq -r '.fragment')
         series_name=$(echo "$series" | jq -r '.series')
+
         command="c8y api PUT /assets/$asset_id/linkedSeries/$fragment_name/$series_name/opposite"
         if [ "$REMOVE_MISSING_SOURCE_ID" = "true" ]; then
             command="$command?removeMissingSourceId=true"
         fi
+        if [ "$DRY_RUN" = "true" ]; then
+            command="$command --dry"
+        fi
+
         info "---------------------------------------------"
         info "WOULD-DO: $command"
         info "---------------------------------------------"
+
         #TODO: Call command - what kind of responses will we expect to get back?
         #Looks like 
         #- 200, all good. 
