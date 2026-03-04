@@ -106,7 +106,7 @@ echo "$assets_with_linked_series" | jq -c '.' | while IFS= read -r asset; do
         
         info "---------------------------------------------"
         info "CALLING: c8y api PUT $theEndpoint $withDryRun"
-        _result=$(c8y api PUT $theEndpoint $withDryRun)
+        _result=$(c8y api PUT "$theEndpoint" $withDryRun)
         info "---------------------------------------------"
 
     done
