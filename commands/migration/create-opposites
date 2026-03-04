@@ -39,7 +39,6 @@ Requirements:
     - go-c8y-cli authenticated session
     - jq for JSON processing
 EOF
-    exit 0
 }
 
 # Default values
@@ -51,6 +50,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             help
+            exit 0
             ;;
         --removeMissingSourceId)
             REMOVE_MISSING_SOURCE_ID=true
@@ -83,7 +83,7 @@ total_collected=$(count_lines "$assets_with_linked_series")
 info "Server returned $total_collected assets with linked series..."
 
 #If we don't have any assets with linked series to handle, we can exit early.
-if [ "$total_collected" -le 1 ]; then
+if [ "$total_collected" -eq 0 ]; then
     info "No assets with linked series to process. Exiting."
     exit 0
 fi
@@ -101,11 +101,11 @@ echo "$assets_with_linked_series" | jq -c '.' | while IFS= read -r asset; do
         fi
         withDryRun=""
         if [ "$DRY_RUN" = "true" ]; then
-            command="--dry"
+            withDryRun="--dry"
         fi
         
         info "---------------------------------------------"
-        info "CALLING: $command"
+        info "CALLING: c8y api PUT $theEndpoint $withDryRun"
         _result=$(c8y api PUT $theEndpoint $withDryRun)
         info "---------------------------------------------"
 
