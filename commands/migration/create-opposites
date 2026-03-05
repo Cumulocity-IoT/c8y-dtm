@@ -39,34 +39,37 @@ Requirements:
     - go-c8y-cli authenticated session
     - jq for JSON processing
 EOF
+exit 0
 }
 
 # Default values
 REMOVE_MISSING_SOURCE_ID=false
-DRY_RUN=false
+POSITIONAL_ARGS=()
 
 # Parse arguments
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             help
-            exit 0
             ;;
         --removeMissingSourceId)
             REMOVE_MISSING_SOURCE_ID=true
-            shift
-            ;;
-        --dryRun)
-            DRY_RUN=true
-            shift
             ;;
         *)
-            error "Unknown option: $1" "See --help for usage information."
-            help
-            exit 1
+            POSITIONAL_ARGS+=("$1")
             ;;
     esac
+    shift
 done
+
+export ALLOWED_FLAGS=(
+  --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
+)
+
+# Restore additional arguments
+set -- "${POSITIONAL_ARGS[@]}"
+
+validate_positional_args "$@"
 
 check_prerequisites
 
@@ -99,14 +102,11 @@ echo "$assets_with_linked_series" | jq -c '.' | while IFS= read -r asset; do
         if [ "$REMOVE_MISSING_SOURCE_ID" = "true" ]; then
             theEndpoint="$theEndpoint?removeMissingSourceId=true"
         fi
-        withDryRun=""
-        if [ "$DRY_RUN" = "true" ]; then
-            withDryRun="--dry"
-        fi
         
         info "---------------------------------------------"
-        info "CALLING: c8y api PUT $theEndpoint $withDryRun"
-        _result=$(c8y api PUT "$theEndpoint" $withDryRun)
+        info "CALLING: c8y api PUT $theEndpoint --output json "${C8Y_FLAGS[@]}""
+        _result=$(c8y api PUT "$theEndpoint" --output json "${C8Y_FLAGS[@]}")
+        echo "$_result" | jq -r '.'
         info "---------------------------------------------"
 
     done
