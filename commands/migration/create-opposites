@@ -91,27 +91,29 @@ if [ "$total_collected" -eq 0 ]; then
     exit 0
 fi
 
-echo "$assets_with_linked_series" | jq -c '.' | while IFS= read -r asset; do
-    asset_id=$(echo "$asset" | jq -r '.id')
+#Get only the data we need for the next steps, and simplify the structure for easier processing
+explodedSeries=$(echo "$assets_with_linked_series" | jq -c '.c8y_LinkedSeries[] as $item | select($item.source.id != null) | . | .c8y_LinkedSeries = $item')
 
-    echo "$asset" | jq -c '.c8y_LinkedSeries[]' | while IFS= read -r series; do
-        fragment_name=$(echo "$series" | jq -r '.fragment')
-        series_name=$(echo "$series" | jq -r '.series')
+total_collected=$(count_lines "$explodedSeries")
+info "...of which $total_collected have linked series with source.id that can be processed."
+#If we don't have any assets with linked series to handle, we can exit early.
+if [ "$total_collected" -eq 0 ]; then
+    info "No assets with linked series and source.id to process. Exiting."
+    exit 0
+fi
 
-        theEndpoint="/assets/$asset_id/linkedSeries/$fragment_name/$series_name/opposite"
-        if [ "$REMOVE_MISSING_SOURCE_ID" = "true" ]; then
-            theEndpoint="$theEndpoint?removeMissingSourceId=true"
-        fi
-        
-        info "---------------------------------------------"
-        info "CALLING: c8y api PUT $theEndpoint --output json "${C8Y_FLAGS[@]}""
-        _result=$(c8y api PUT "$theEndpoint" --output json "${C8Y_FLAGS[@]}")
-        echo "$_result" | jq -r '.'
-        info "---------------------------------------------"
+missingSourceOption=""
+if [ "$REMOVE_MISSING_SOURCE_ID" = "true" ]; then
+    missingSourceOption="?removeMissingSourceId=true"
+fi
 
-    done
-done
+echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
+return_code=$?
+
+if [ $return_code -ne 0 ]; then
+    error "Error during processing." "Failed to create at least one opposite reference. API call returned with code $return_code."
+    exit $return_code
+fi
 
 success "Completed."
-
 exit 0
