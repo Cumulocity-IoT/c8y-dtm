@@ -85,65 +85,75 @@ check_prerequisites
 
 export FILTER_QUERY="has(${LINKED_SERIES_FRAGMENT})"
 export EXTRA_SELECT_FIELDS="${LINKED_SERIES_FRAGMENT}"
-assets_with_linked_series=$(load_all_assets)
 
-if is_empty_result_set "$assets_with_linked_series" ; then
-    info "No assets to handle. Exiting."
-    exit 0
-fi
+if [ "$CREATE" = true ]; then
+    info "Running in CREATE mode."
 
-total_collected=$(count_lines "$assets_with_linked_series")
-info "Server returned $total_collected assets with linked series..."
+    assets_with_linked_series=$(load_all_assets)
 
-# If we don't have any assets with linked series to handle, we can exit early.
-if [ "$total_collected" -eq 0 ]; then
-    info "No assets with linked series to process. Exiting."
-    exit 0
-fi
+    if is_empty_result_set "$assets_with_linked_series" ; then
+        info "No assets to handle. Exiting."
+        exit 0
+    fi
 
-# Get only the data we need for the next steps, and simplify the structure for easier processing
-explodedSeries=$(echo "$assets_with_linked_series" | jq -c '. as $parent | .c8y_LinkedSeries[] as $item | select($item.source.id != null) | $parent | .c8y_LinkedSeries = $item')
-# echo "$explodedSeries" | jq
+    total_collected=$(count_lines "$assets_with_linked_series")
+    info "Server returned $total_collected assets with linked series..."
 
-total_collected=$(count_lines "$explodedSeries")
-info "...of which $total_collected have linked series with source.id that can be processed."
+    # If we don't have any assets with linked series to handle, we can exit early.
+    if [ "$total_collected" -eq 0 ]; then
+        info "No assets with linked series to process. Exiting."
+        exit 0
+    fi
 
-#If we don't have any assets with linked series to handle, we can exit early.
-if [ "$total_collected" -eq 0 ]; then
-    info "No assets with linked series and source.id to process. Exiting."
-    exit 0
-fi
+    # Get only the data we need for the next steps, and simplify the structure for easier processing
+    explodedSeries=$(echo "$assets_with_linked_series" | jq -c '. as $parent | .c8y_LinkedSeries[] as $item | select($item.source.id != null) | $parent | .c8y_LinkedSeries = $item')
+    # echo "$explodedSeries" | jq
 
-childAddtions=$(printf '%s' "$explodedSeries" | jq -c -s 'map({
-        source_id: .c8y_LinkedSeries.source.id,
-        linked_asset: (
-            . as $parent |
-            {
-                asset: ($parent.c8y_LinkedSeries | del(.source) + {id: $parent.id})
-            } + ($parent.c8y_LinkedSeries.source | del(.id))
-        )
-    })
-    | group_by(.source_id)
-    | map({
-        id: .[0].source_id,
-        c8y_LinkedAssets: map(.linked_asset)
-    })
-    | .[]')
+    total_collected=$(count_lines "$explodedSeries")
+    info "...of which $total_collected have linked series with source.id that can be processed."
 
-# echo "$childAddtions" | jq 
+    #If we don't have any assets with linked series to handle, we can exit early.
+    if [ "$total_collected" -eq 0 ]; then
+        info "No assets with linked series and source.id to process. Exiting."
+        exit 0
+    fi
 
-echo "$childAddtions" | c8y devices children create \
-        --childType "addition" \
-        --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets }' \
-        "${C8Y_FLAGS[@]}"
+    childAddtions=$(printf '%s' "$explodedSeries" | jq -c -s 'map({
+            source_id: .c8y_LinkedSeries.source.id,
+            linked_asset: (
+                . as $parent |
+                {
+                    asset: ($parent.c8y_LinkedSeries | del(.source) + {id: $parent.id})
+                } + ($parent.c8y_LinkedSeries.source | del(.id))
+            )
+        })
+        | group_by(.source_id)
+        | map({
+            id: .[0].source_id,
+            c8y_LinkedAssets: map(.linked_asset)
+        })
+        | .[]')
 
-# to use the opposite endpoint, 
-# echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
+    # echo "$childAddtions" | jq 
 
-return_code=$?
-if [ $return_code -ne 0 ]; then
-    error "Error during processing." "Failed to create at least one opposite reference. API call returned with code $return_code."
-    exit $return_code
+    echo "$childAddtions" | c8y devices children create \
+            --childType "addition" \
+            --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets }' \
+            "${C8Y_FLAGS[@]}"
+
+    # to use the opposite endpoint, 
+    # echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
+
+    return_code=$?
+    if [ $return_code -ne 0 ]; then
+        error "Error during processing." "Failed to create at least one opposite reference. API call returned with code $return_code."
+        exit $return_code
+    fi
+
+else if [ "$CLEAR" = true ]; then
+    info "Running in CLEAR mode."
+    warn "Does nothing yet."
+    exit 1
 fi
 
 success "Completed."
