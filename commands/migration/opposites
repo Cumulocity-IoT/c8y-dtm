@@ -97,12 +97,13 @@ if [ "$CREATE" = true ]; then
     fi
 
     total_collected=$(count_lines "$assets_with_linked_series")
-    info "Server returned $total_collected assets with linked series..."
-
+    
     # If we don't have any assets with linked series to handle, we can exit early.
     if [ "$total_collected" -eq 0 ]; then
         info "No assets with linked series to process. Exiting."
         exit 0
+    else
+        info "Server returned $total_collected assets with linked series."
     fi
 
     # Get only the data we need for the next steps, and simplify the structure for easier processing
@@ -110,12 +111,13 @@ if [ "$CREATE" = true ]; then
     # echo "$explodedSeries" | jq
 
     total_collected=$(count_lines "$explodedSeries")
-    info "...of which $total_collected have linked series with source.id that can be processed."
 
     #If we don't have any assets with linked series to handle, we can exit early.
     if [ "$total_collected" -eq 0 ]; then
         info "No assets with linked series and source.id to process. Exiting."
         exit 0
+    else
+        info "There are $total_collected assets that have linked series with source.id that can be processed."
     fi
 
     childAddtions=$(printf '%s' "$explodedSeries" | jq -c -s 'map({
