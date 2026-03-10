@@ -19,20 +19,19 @@ help() {
 Create Opposite references for DTM Assets with c8y_LinkedSeries fragment.
 
 Usage:
-    c8y dtm migration create-opposites [args...]
+    c8y dtm migration opposites [create|clear] [args...]
 
 Description:
-    Creates opposite references for all Assets that have the c8y_LinkedSeries fragment. 
-    For each linked series, an opposite reference will be created as ChildAddition of the linked device using the 
-    /assets/{id}/linkedSeries/{fragment}/{series}/opposite endpoint.
-
+    Creates or removes opposite references for all Assets that have the c8y_LinkedSeries fragment. 
+    In create mode, for each linked series an opposite reference will be created as ChildAddition of the linked device.
+    In clear mode, all opposite references will be removed.
 
 Flags:
     -h, --help                 Show this help message
-    --dryRun                   Show what would be done, without making any changes.
 
 Examples:
-    c8y dtm migration create-opposites --removeMissingSourceId
+    c8y dtm migration create-opposites create
+    c8y dtm migration create-opposites clear
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -43,12 +42,20 @@ exit 0
 
 # Default values
 POSITIONAL_ARGS=()
+CREATE=false
+CLEAR=false
 
 # Parse arguments
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             help
+            ;;
+        create)
+            CREATE=true
+            ;;
+        clear)
+            CLEAR=true
             ;;
         *)
             POSITIONAL_ARGS+=("$1")
@@ -60,6 +67,14 @@ done
 export ALLOWED_FLAGS=(
   --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
 )
+
+if [ "$CREATE" = true ] && [ "$CLEAR" = true ]; then
+    error "Bad args:" "Cannot use create and clear options at the same time."
+    exit 1
+else if [ "$CREATE" = false ] && [ "$CLEAR" = false ]; then
+    error "Bad args:" "Either create or clear option must be specified."
+    exit 1
+fi
 
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
