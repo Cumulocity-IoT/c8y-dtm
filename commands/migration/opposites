@@ -41,8 +41,21 @@ exit 0
 
 # Default values
 POSITIONAL_ARGS=()
-CREATE=false
-CLEAR=false
+MODE=""
+
+checkDefiningModeTwice() {
+    if [ -n "$MODE" ]; then
+        error "Bad args:" "Cannot specify more than one mode. Already set to '$MODE'."
+        exit 1
+    fi
+}
+
+checkModeIsSet() {
+    if [ -z "$MODE" ]; then
+        error "Bad args:" "No mode specified. Please specify either 'create' or 'clear'."
+        exit 1
+    fi
+}
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -51,10 +64,12 @@ while [ $# -gt 0 ]; do
             help
             ;;
         create)
-            CREATE=true
+            checkDefiningModeTwice
+            MODE="create"
             ;;
         clear)
-            CLEAR=true
+            checkDefiningModeTwice
+            MODE="clear"
             ;;
         *)
             POSITIONAL_ARGS+=("$1")
@@ -64,16 +79,10 @@ while [ $# -gt 0 ]; do
 done
 
 export ALLOWED_FLAGS=(
-  --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
+  --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
 )
 
-if [ "$CREATE" = true ] && [ "$CLEAR" = true ]; then
-    error "Bad args:" "Cannot use create and clear options at the same time."
-    exit 1
-elif [ "$CREATE" = false ] && [ "$CLEAR" = false ]; then
-    error "Bad args:" "Either create or clear option must be specified."
-    exit 1
-fi
+checkModeIsSet
 
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
@@ -85,8 +94,14 @@ check_prerequisites
 export FILTER_QUERY="has(${LINKED_SERIES_FRAGMENT})"
 export EXTRA_SELECT_FIELDS="${LINKED_SERIES_FRAGMENT}"
 
-if [ "$CREATE" = true ]; then
+if [ "$MODE" = "create" ]; then
     info "Running in CREATE mode."
+
+    existing_reverses=$(c8y inventory find --pageSize 1 --type "c8y_LinkedSeriesReverseIndex")
+    if ! is_empty_result_set "$existing_reverses"; then
+        error "Existing references detected." "There are already opposite references in the tenant. Stopping."
+        exit 1
+    fi
 
     assets_with_linked_series=$(load_all_assets)
 
@@ -135,27 +150,22 @@ if [ "$CREATE" = true ]; then
         })
         | .[]')
 
-    # echo "$childAddtions" | jq 
-
     echo "$childAddtions" | c8y devices children create \
             --childType "addition" \
-            --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets }' \
+            --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets, type: "c8y_LinkedSeriesReverseIndex" }' \
             "${C8Y_FLAGS[@]}"
 
     # to use the opposite endpoint, 
     # echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
-
-    return_code=$?
-    if [ $return_code -ne 0 ]; then
-        error "Error during processing." "Failed to create at least one opposite reference. API call returned with code $return_code."
-        exit $return_code
-    fi
-
-elif [ "$CLEAR" = true ]; then
+elif [ "$MODE" = "clear" ]; then
     info "Running in CLEAR mode."
-    warn "Does nothing yet."
-    exit 1
+    
+    c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"
 fi
-
-success "Completed."
-exit 0
+return_code=$?
+if [ $return_code -ne 0 ]; then
+    error "Error during processing." "Failed to handle at least one opposite reference. API call returned with code $return_code."
+else
+    success "Successfully handled all opposite references."
+fi
+exit $return_code
