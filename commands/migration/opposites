@@ -133,7 +133,7 @@ if [ "$MODE" = "create" ]; then
         info "There are $total_collected assets that have linked series with source.id that can be processed."
     fi
 
-    childAddtions=$(printf '%s' "$explodedSeries" | jq -c -s 'map({
+    childAdditions=$(printf '%s' "$explodedSeries" | jq -c -s 'map({
             source_id: .c8y_LinkedSeries.source.id,
             linked_asset: (
                 . as $parent |
@@ -149,7 +149,7 @@ if [ "$MODE" = "create" ]; then
         })
         | .[]')
 
-    echo "$childAddtions" | c8y devices children create \
+    echo "$childAdditions" | c8y devices children create \
             --childType "addition" \
             --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets, type: "c8y_LinkedSeriesReverseIndex" }' \
             "${C8Y_FLAGS[@]}"
