@@ -122,7 +122,6 @@ if [ "$MODE" = "create" ]; then
 
     # Get only the data we need for the next steps, and simplify the structure for easier processing
     explodedSeries=$(echo "$assets_with_linked_series" | jq -c '. as $parent | .c8y_LinkedSeries[] as $item | select($item.source.id != null) | $parent | .c8y_LinkedSeries = $item')
-    # echo "$explodedSeries" | jq
 
     total_collected=$(count_lines "$explodedSeries")
 
@@ -164,7 +163,7 @@ elif [ "$MODE" = "clear" ]; then
 fi
 return_code=$?
 if [ $return_code -ne 0 ]; then
-    error "Error during processing." "Failed to handle at least one opposite reference. API call returned with code $return_code."
+    error "Error during processing." "Failed to $MODE at least one opposite reference. API call returned with code $return_code."
 else
     success "Successfully handled all opposite references."
 fi
