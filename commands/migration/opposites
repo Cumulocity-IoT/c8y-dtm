@@ -70,7 +70,7 @@ export ALLOWED_FLAGS=(
 if [ "$CREATE" = true ] && [ "$CLEAR" = true ]; then
     error "Bad args:" "Cannot use create and clear options at the same time."
     exit 1
-else if [ "$CREATE" = false ] && [ "$CLEAR" = false ]; then
+elif [ "$CREATE" = false ] && [ "$CLEAR" = false ]; then
     error "Bad args:" "Either create or clear option must be specified."
     exit 1
 fi
@@ -151,7 +151,7 @@ if [ "$CREATE" = true ]; then
         exit $return_code
     fi
 
-else if [ "$CLEAR" = true ]; then
+elif [ "$CLEAR" = true ]; then
     info "Running in CLEAR mode."
     warn "Does nothing yet."
     exit 1
