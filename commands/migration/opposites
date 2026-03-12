@@ -78,7 +78,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-export ALLOWED_FLAGS=(
+ALLOWED_FLAGS=(
   --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --progress --timeout --totalErrors --workers --verbose
 )
 

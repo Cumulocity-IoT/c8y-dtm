@@ -124,7 +124,7 @@ if [ "$OUTPUT" != "json" ] && [ "$OUTPUT" != "JSON" ]; then
 fi
 
 # List of allowed global/inherited flags for c8y identity list (short and long forms)
-export ALLOWED_FLAGS=(
+ALLOWED_FLAGS=(
   --workers --progress --debug --cache --cacheBodyPaths --cacheTTL --delay --delayBefore --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --noLog --progress --timeout --workers --verbose
 )
 
