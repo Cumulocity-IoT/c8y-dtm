@@ -9,8 +9,8 @@
 source "$(dirname "$0")/../_shared/helper"
 source "$(dirname "$0")/../_shared/constants"
 
-# Stop on unexpected errors
-set -e
+# Stop on unexpected errors. Ensure that pipelines return the correct exit code.
+set -eo pipefail
 
 # Help text
 help() {
@@ -161,10 +161,5 @@ elif [ "$MODE" = "clear" ]; then
     
     c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"
 fi
-return_code=$?
-if [ $return_code -ne 0 ]; then
-    error "Error during processing." "Failed to $MODE at least one opposite reference. API call returned with code $return_code."
-else
-    success "Successfully handled all opposite references."
-fi
-exit $return_code
+
+success "Successfully handled all opposite references."
