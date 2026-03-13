@@ -71,6 +71,10 @@ while [ $# -gt 0 ]; do
             checkDefiningModeTwice
             MODE="clear"
             ;;
+        verify)
+            checkDefiningModeTwice
+            MODE="verify"
+            ;;
         *)
             POSITIONAL_ARGS+=("$1")
             ;;
@@ -156,6 +160,53 @@ if [ "$MODE" = "create" ]; then
 
     # to use the opposite endpoint, 
     # echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
+
+elif [ "$MODE" = "verify" ]; then
+    info "Running in VERIFY mode. (This may take some time.)"
+    assets_with_linked_series=$(load_all_assets)
+
+    if is_empty_result_set "$assets_with_linked_series" ; then
+        info "No assets exist on tenant. Exiting."
+        exit 0
+    fi
+    
+    total_collected=$(count_lines "$assets_with_linked_series")
+    info "Server returned $total_collected assets with linked series."
+
+    # Get only the data we need for the next steps, and simplify the structure for easier processing
+    explodedSeries=$(echo "$assets_with_linked_series" | jq -c '. as $parent | .c8y_LinkedSeries[] as $item | select($item.source.id != null) | $parent | .c8y_LinkedSeries = $item')
+
+    total_collected=$(count_lines "$explodedSeries")
+
+    #If we don't have any assets with linked series to handle, we can exit early.
+    if [ "$total_collected" -eq 0 ]; then
+        info "No assets with linked series and source.id to process. Exiting."
+        exit 0
+    else
+        info "There are $total_collected assets that have linked series with source.id that can be processed."
+    fi
+
+    for row in $(echo "$explodedSeries" | jq -c '.'); do
+        sourceId=$(echo "$row" | jq -r '.c8y_LinkedSeries.source.id')
+        parentId=$(echo "$row" | jq -r '.id')
+
+        if [ -z "$sourceId" ] || [ "$sourceId" = "null" ]; then
+            error "Missing source ID for linked series of asset '$parentId'."
+            exit 1
+        fi
+
+        targetDevice=$(c8y devices get --id "$sourceId" --silentStatusCodes 404 --silentExit)
+        #info "$targetDevice"
+        if is_empty_result_set "$targetDevice"; then
+            error "Source device with ID '$sourceId' for linked series of asset '$parentId' does not exist."
+            exit 1 
+        else 
+            info "Source device with ID '$sourceId' for linked series of asset '$parentId' exists."
+        fi
+
+        # If we want to be extra sure, we could also check if the opposite reference exists and points back to the original asset. 
+    done
+
 elif [ "$MODE" = "clear" ]; then
     info "Running in CLEAR mode."
     
