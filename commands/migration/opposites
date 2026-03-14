@@ -208,10 +208,10 @@ elif [ "$MODE" = "verify" ]; then
       else 
         local references = output.references;
         if (std.length(references) > 1) then
-            input.value + { "error": "TooManyChildAddtionsError"}
+            input.value + { "error": "TooManyChildAdditionsError"}
         else 
             local managedObject = references[0].managedObject;
-            local common = {"childAAdditionId": managedObject.id, "type": managedObject.type};
+            local common = {"childAdditionId": managedObject.id, "type": managedObject.type};
             if (!hasValue(managedObject, "c8y_LinkedAssets") || !std.isArray(managedObject.c8y_LinkedAssets) || std.length(managedObject.c8y_LinkedAssets) == 0) then
                 input.value + common + { "error": "MissingLinkedAssetsInChildAdditionError"}
             else
