@@ -18,12 +18,13 @@ help() {
 Create Opposite references for DTM Assets with c8y_LinkedSeries fragment.
 
 Usage:
-    c8y dtm migration opposites [create|clear] [args...]
+    c8y dtm migration opposites [create|clear|verify] [args...]
 
 Description:
     Creates or removes opposite references for all Assets that have the c8y_LinkedSeries fragment. 
     In create mode, for each linked series an opposite reference will be created as ChildAddition of the linked device.
     In clear mode, all opposite references will be removed.
+    In verify mode, opposite references are checked without changing them.
 
 Flags:
     -h, --help                 Show this help message
@@ -31,6 +32,7 @@ Flags:
 Examples:
     c8y dtm migration opposites create
     c8y dtm migration opposites clear
+    c8y dtm migration opposites verify
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -52,7 +54,7 @@ checkDefiningModeTwice() {
 
 checkModeIsSet() {
     if [ -z "$MODE" ]; then
-        error "Bad args:" "No mode specified. Please specify either 'create' or 'clear'."
+        error "Bad args:" "No mode specified. Please specify either 'create', 'clear' or 'verify'."
         exit 1
     fi
 }
