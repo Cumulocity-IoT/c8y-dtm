@@ -28,11 +28,14 @@ Description:
 
 Flags:
     -h, --help   Show this help message
+    --id         Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
 
 Examples:
     c8y dtm migration opposites create
     c8y dtm migration opposites clear
     c8y dtm migration opposites verify
+    c8y dtm migration opposites verify --id "12345"
+    c8y dtm migration opposites verify --id "My Asset Name"
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -59,11 +62,31 @@ checkModeIsSet() {
     fi
 }
 
+checkAllowedSingleIdUsage() {
+    if [ -n "$SINGLE_ID" ] && [ "$MODE" = "verify" ]; then
+        info "Single ID '$SINGLE_ID' query."
+    else
+        error "Bad args:" "Cannot use --id flag in $MODE mode."
+        exit 1
+    fi
+}
+
+SINGLE_ID=""
+
 # Parse arguments
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             help
+            ;;
+        --id)
+            if [ -n "$SINGLE_ID" ]; then
+                error "Bad args:" "Cannot specify --id more than once. Already set to '$SINGLE_ID'."
+                exit 1
+            fi
+            SINGLE_ID="$2"
+            info "Single asset mode enabled. Will only process asset with id/name '$SINGLE_ID'."
+            shift
             ;;
         create)
             checkDefiningModeTwice
@@ -89,6 +112,7 @@ ALLOWED_FLAGS=(
 )
 
 checkModeIsSet
+checkAllowedSingleIdUsage
 
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
@@ -97,7 +121,11 @@ validate_positional_args "$@"
 
 check_prerequisites
 
-export FILTER_QUERY="has(${LINKED_SERIES_FRAGMENT})"
+if [ -n "$SINGLE_ID" ]; then
+    export FILTER_QUERY="(id eq '$SINGLE_ID' or name eq '$SINGLE_ID') and has(${LINKED_SERIES_FRAGMENT})"
+else
+    export FILTER_QUERY="has(${LINKED_SERIES_FRAGMENT})"
+fi
 export EXTRA_SELECT_FIELDS="${LINKED_SERIES_FRAGMENT}"
 
 load_assets_with_linked_series() {
