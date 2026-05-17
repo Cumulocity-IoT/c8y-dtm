@@ -65,9 +65,6 @@ checkModeIsSet() {
 checkAllowedSingleIdUsage() {
     if [ -n "$SINGLE_ID" ] && [ "$MODE" = "verify" ]; then
         info "Single ID '$SINGLE_ID' query."
-    else
-        error "Bad args:" "Cannot use --id flag in $MODE mode."
-        exit 1
     fi
 }
 
@@ -261,8 +258,8 @@ elif [ "$MODE" = "verify" ]; then
     done < <(echo "$result" | jq -c '. | select(.error != null) |
         if .error == "NoChildAdditionsError" then
             "NoChildAdditionsError - device \(.id) has no child additions"
-        elif .error == "TooManyChildAddtionsError" then
-            "TooManyChildAddtionsError - device \(.id) has more than one child addition"
+        elif .error == "TooManyChildAdditionsError" then
+            "TooManyChildAdditionsError - device \(.id) has more than one child addition"
         elif .error == "MissingLinkedAssetsInChildAdditionError" then
             "MissingLinkedAssetsInChildAdditionError - device \(.id) child addition \(.childAdditionId) has no c8y_LinkedAssets fragment or it is empty"
         elif .error == "MissingLinkedSeriesInChildAdditionError" then
