@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+
+# DTM Migrations - create-opposites command
+# Create Opposite References for DTM Assets
+
+# import shared functions
+
+# shellcheck source=/dev/null
+source "$(dirname "$0")/../_shared/helper"
+source "$(dirname "$0")/../_shared/constants"
+
+# Stop on unexpected errors. Ensure that pipelines return the correct exit code.
+set -eo pipefail
+
+# Help text
+help() {
+    cat <<EOF
+Create Opposite references for DTM Assets with c8y_LinkedSeries fragment.
+
+Usage:
+    c8y dtm migration opposites [create|clear|verify|get] [args...]
+
+Description:
+    Creates or removes opposite references for all Assets that have the c8y_LinkedSeries fragment. 
+    In create mode, for each linked series an opposite reference will be created as ChildAddition of the linked device.
+    In clear mode, all opposite references will be removed.
+    In verify mode, opposite references are checked without changing them.
+    In get mode, all opposite references are retrieved and displayed.
+
+Flags:
+    -h, --help   Show this help message
+    --id         Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
+
+Examples:
+    c8y dtm migration opposites create
+    c8y dtm migration opposites clear
+    c8y dtm migration opposites verify
+    c8y dtm migration opposites verify --id "12345"
+    c8y dtm migration opposites verify --id "My Asset Name"
+    c8y dtm migration opposites get
+
+Requirements:
+    - go-c8y-cli authenticated session
+    - jq for JSON processing
+EOF
+exit 0
+}
+
+# Default values
+POSITIONAL_ARGS=()
+MODE=""
+
+checkDefiningModeTwice() {
+    if [ -n "$MODE" ]; then
+        error "Bad args:" "Cannot specify more than one mode. Already set to '$MODE'."
+        exit 1
+    fi
+}
+
+checkModeIsSet() {
+    if [ -z "$MODE" ]; then
+        error "Bad args:" "No mode specified. Please specify either 'create', 'clear', 'verify' or 'get'."
+        exit 1
+    fi
+}
+
+checkAllowedSingleIdUsage() {
+    if [ -n "$SINGLE_ID" ] && [ "$MODE" = "verify" ]; then
+        info "Single ID '$SINGLE_ID' query."
+    fi
+}
+
+SINGLE_ID=""
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            help
+            ;;
+        --id)
+            if [ -n "$SINGLE_ID" ]; then
+                error "Bad args:" "Cannot specify --id more than once. Already set to '$SINGLE_ID'."
+                exit 1
+            fi
+            SINGLE_ID="$2"
+            info "Single asset mode enabled. Will only process asset with id/name '$SINGLE_ID'."
+            shift
+            ;;
+        create)
+            checkDefiningModeTwice
+            MODE="create"
+            ;;
+        clear)
+            checkDefiningModeTwice
+            MODE="clear"
+            ;;
+        verify)
+            checkDefiningModeTwice
+            MODE="verify"
+            ;;
+        get)
+            checkDefiningModeTwice
+            MODE="get"
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
+
+ALLOWED_FLAGS=(
+  --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --output --progress --timeout --totalErrors --workers --verbose --raw
+)
+
+checkModeIsSet
+checkAllowedSingleIdUsage
+
+# Restore additional arguments
+set -- "${POSITIONAL_ARGS[@]}"
+
+validate_positional_args "$@"
+
+check_prerequisites
+
+if [ -n "$SINGLE_ID" ]; then
+    export FILTER_QUERY="(id eq '$SINGLE_ID' or name eq '$SINGLE_ID') and has(${LINKED_SERIES_FRAGMENT})"
+else
+    export FILTER_QUERY="hasany(${LINKED_SERIES_FRAGMENT}.source.id)"
+fi
+export EXTRA_SELECT_FIELDS="${LINKED_SERIES_FRAGMENT}"
+
+load_assets_with_linked_series() {
+    assets_with_linked_series=$(load_all_assets)
+
+    if is_empty_result_set "$assets_with_linked_series" ; then
+        info "No assets with linked series found. Exiting."
+        return 1
+    fi
+
+    total_collected=$(count_lines "$assets_with_linked_series")
+    info "Found $total_collected assets with linked series. Processing..."
+    
+    echo "$assets_with_linked_series"
+}
+
+explode_assets_with_linked_series() {
+    explodedSeries=$(
+      echo "$assets_with_linked_series" | jq -c '
+          . as $parent | 
+          .c8y_LinkedSeries[] as $item | 
+          select($item.source.id != null) | 
+          $parent | 
+          .c8y_LinkedSeries = $item'
+    )
+    echo "$explodedSeries"
+}
+
+if [ "$MODE" = "create" ]; then
+    info "Started creating opposite reference..."
+
+    existing_childaddtions=$(c8y inventory find --pageSize 1 --type "c8y_LinkedSeriesReverseIndex")
+    if ! is_empty_result_set "$existing_childaddtions"; then
+        error "Existing child additions detected." "There are already opposite references in the tenant. Stopping."
+        exit 1
+    fi
+
+    assets_with_linked_series=$(load_assets_with_linked_series) || exit 0
+
+    # Get only the data we need for the next steps, and simplify the structure for easier processing
+    explodedSeries=$(explode_assets_with_linked_series)
+    total_collected=$(count_lines "$explodedSeries")
+    info "Found $total_collected links to create opposite references."
+
+    childAdditions=$(printf '%s' "$explodedSeries" | jq -c -s 'map({
+            source_id: .c8y_LinkedSeries.source.id,
+            linked_asset: (
+                . as $parent |
+                {
+                    asset: ($parent.c8y_LinkedSeries | del(.source) + {id: $parent.id})
+                } + ($parent.c8y_LinkedSeries.source | del(.id))
+            )
+        })
+        | group_by(.source_id)
+        | map({
+            id: .[0].source_id,
+            c8y_LinkedAssets: map(.linked_asset)
+        })
+        | .[]')
+
+    echo "$childAdditions" | c8y devices children create \
+            --childType "addition" \
+            --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets, type: "c8y_LinkedSeriesReverseIndex" }' \
+            "${C8Y_FLAGS[@]}"
+
+    # to use the opposite endpoint, 
+    # echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
+
+elif [ "$MODE" = "verify" ]; then
+    info "Running verification..."
+    assets_with_linked_series=$(load_assets_with_linked_series) || exit 0
+
+    # Get only the data we need for the next steps, and simplify the structure for easier processing
+    explodedSeries=$(explode_assets_with_linked_series |
+      jq -c '{ 
+          "c8y_LinkedSeries": .c8y_LinkedSeries, 
+          "assetId": .id, 
+          "id": .c8y_LinkedSeries.source.id 
+      }'
+    )
+    total_collected=$(count_lines "$explodedSeries")
+    info "Found $total_collected links to verify."
+
+    # Deduplicate by device ID - only query each unique device once
+    uniqueDevices=$(echo "$explodedSeries" | jq -cs 'unique_by(.id) | .[]')
+    unique_count=$(count_lines "$uniqueDevices")
+    
+    info "Found $unique_count unique source devices. Verifying each once..."
+
+    output_template='
+      local hasValue(obj, field) = std.isObject(obj) && std.objectHas(obj, field) && obj[field] != null && std.toString(obj[field]) != "";
+      if std.isString(output) then
+        input.value + { "error": "OutputIsStringError"}
+      else if output == null then
+        input.value + { "error": "OutputIsNullError"}
+      else if !std.isObject(output) then
+        input.value + { "error": "OutputNotObjectError"}
+      else if hasValue(output, "errorType") then
+        input.value + output + { "error": "ServerError"}
+      else if !hasValue(output, "references") then
+        input.value + { "error": "NoReferencesFieldError"}
+      else if !std.isArray(output.references) then
+        input.value + { "error": "ReferencesNotArrayError"}
+      else if std.length(output.references) == 0 then
+        input.value + { "error": "NoChildAdditionsError"}
+      else if std.length(output.references) > 1 then
+        input.value + { "error": "TooManyChildAdditionsError"}
+      else
+        local references = output.references;
+        local managedObject = references[0].managedObject;
+        if !std.isObject(managedObject) then
+          input.value + { "error": "ManagedObjectNotObjectError"}
+        else if !hasValue(managedObject, "c8y_LinkedAssets") then
+          input.value + { "error": "MissingLinkedAssetsInChildAdditionError"}
+        else if !std.isArray(managedObject.c8y_LinkedAssets) || std.length(managedObject.c8y_LinkedAssets) == 0 then
+          input.value + { "error": "LinkedAssetsNotArrayOrEmptyError"}
+        else
+          local linkedAssets = managedObject.c8y_LinkedAssets;
+          local common = {"childAdditionId": managedObject.id, "type": managedObject.type};
+          local result = input.value + common + { "linkedAssets": linkedAssets };
+          local source = result.c8y_LinkedSeries.source;
+          local matches = std.filter(
+            function(item)
+              std.isObject(item) && item.fragment == source.fragment && item.series == source.series,
+            linkedAssets
+          );
+          if std.length(matches) > 0 then
+            result + { "verification": "success" }
+          else
+            result + { "error": "MissingLinkedSeriesInChildAdditionError" }
+    '
+    
+    # Temporarily disable exit on error to allow processing to continue
+    set +e
+    result=$(
+      echo "$uniqueDevices" |
+      c8y inventory children list \
+          --childType addition \
+          --withError \
+          --silentExit \
+          --query "type eq c8y_LinkedSeriesReverseIndex" \
+          --raw \
+          --outputTemplate "$output_template" \
+          "${C8Y_FLAGS[@]}" 2>/dev/null
+    )
+    set -e
+
+    echo "$result" > "errors.json"
+    error_count=0
+
+    while read -r id error error_msg; do
+        if [ -z "$id" ]; then continue; fi
+        if ! [ -z "$error" ]; then
+            error_count=$((error_count+1))
+        else 
+            continue
+        fi
+        error "$id $error" "$error_msg"
+    done < <(echo "$result" | jq -c '. | select(.error != null) |
+        if .errorType == "serverError" then
+            "SourceDeviceError - " + .message
+        elif .error == "NoChildAdditionsError" then
+            "NoChildAdditionsError - device " + (.id|tostring) + " has no child additions (asset " + (.assetId|tostring) + ")"
+        elif .error == "TooManyChildAdditionsError" then
+            "TooManyChildAdditionsError - device " + (.id|tostring) + " has more than one child addition"
+        elif .error == "ManagedObjectNotObjectError" then
+            "ManagedObjectNotObjectError - device " + (.id|tostring) + " managedObject is not an object (asset " + (.assetId|tostring) + ")"
+        elif .error == "MissingLinkedAssetsInChildAdditionError" then
+            "MissingLinkedAssetsInChildAdditionError - device " + (.id|tostring) + " child addition " + (.childAdditionId|tostring) + " has no c8y_LinkedAssets fragment or it is empty"
+        elif .error == "LinkedAssetsNotArrayOrEmptyError" then
+            "LinkedAssetsNotArrayOrEmptyError - device " + (.id|tostring) + " child addition " + (.childAdditionId|tostring) + " c8y_LinkedAssets is not an array or is empty"
+        elif .error == "MissingLinkedSeriesInChildAdditionError" then
+            "MissingLinkedSeriesInChildAdditionError - device " + (.id|tostring) + " linked series not found in child addition " + (.childAdditionId|tostring) + " c8y_LinkedAssets"
+        elif .error != null then
+            (.id|tostring) + " - " + (.error|tostring)
+        else
+            null
+        end
+    ')
+  
+    success "Completed checking $(count_lines "$assets_with_linked_series") assets with linked series. Found $error_count errors."
+elif [ "$MODE" = "clear" ]; then
+    info "Clearing opposite references..."
+    c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"
+elif [ "$MODE" = "get" ]; then
+    info "Retrieving opposite references..."
+    c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" "${C8Y_FLAGS[@]}"
+fi
