@@ -31,7 +31,7 @@ validate_positional_args() {
             continue
         fi
         # Set REQUIRES_OUTPUT if arg matches
-        if [[ "$arg" == "-o" || "$arg" == "--output" || "$arg" == "--dry" ]]; then
+        if [[ "$arg" == "-o" || "$arg" == "--output" || "$arg" == "--dry" || "$arg" == "--raw" ]]; then
             REQUIRES_OUTPUT=1
         fi
         found=0

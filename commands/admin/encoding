@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+
+# Check and fix character encoding issues in assets
+
+# import shared functions
+
+# shellcheck source=/dev/null
+source "$(dirname "$0")/../_shared/helper"
+source "$(dirname "$0")/../_shared/constants"
+
+set -e
+
+help() {
+    cat <<EOF
+Check and fix character encoding issues in assets.
+
+Usage:
+  c8y dtm admin encoding [options]
+
+Description:
+  This command helps detect and fix character encoding issues in assets,
+  particularly Latin-1 to UTF-8 conversion issues (e.g., Ã characters).
+
+  Common encoding issues detected:
+    - Latin-1 to UTF-8 double-encoding (Ã followed by non-ASCII)
+    - Malformed UTF-8 sequences
+    - Windows-1252 encoding issues
+
+Flags:
+  -f, --fix           Fix detected encoding issues by updating assets
+  -r, --remove        Remove broken fields by setting them to null
+      --query         Filter assets using a query (e.g., "name eq '*Ã*'")
+
+  -h, --help          Show this help message
+      --examples      Show examples
+EOF
+    exit 0
+}
+
+examples() {
+    cat <<EOF
+Examples:
+  # Check all assets for encoding issues
+  c8y dtm admin encoding
+
+  # Check assets matching a specific name pattern
+  c8y dtm admin encoding --query "name eq '*Ã*'"
+
+  # Dry run to see what would be fixed
+  c8y dtm admin encoding --fix --dry
+
+  # Fix encoding issues with parallel workers
+  c8y dtm admin encoding --fix --workers 10
+
+  # Remove broken fields by setting them to null
+  c8y dtm admin encoding --remove --dry
+
+  c8y dtm admin encoding --query "id eq '99567200'" --fix --force --output json 2>/dev/null | \ 
+        c8y util show --select id,c8y_Notes
+
+EOF
+    exit 0
+}
+
+# Fix Latin-1 to UTF-8 double-encoding for batch processing
+# jq, jsonnet and iconv do not work as the required conversion needs byte level manipulation
+# Input: JSON lines with format: {"id":"123","name":"asset","field":"c8y_Notes","value":"text"}
+# Output: Same format with fixed_value added
+fix_encoding_batch() {
+# shellcheck disable=SC2016
+    local perl_script='
+chomp;
+my $obj = decode_json($_);
+eval {
+    # Encode the Unicode string as Latin-1 bytes, then decode as UTF-8
+    my $fixed = decode("UTF-8", encode("iso-8859-1", $obj->{value}));
+    $obj->{fixed_value} = $fixed;
+};
+$obj->{fixed_value} = $obj->{value} unless exists $obj->{fixed_value};
+print encode_json($obj) . "\n";
+    '
+    
+    local python_script='
+import sys, json
+for line in sys.stdin:
+    obj = json.loads(line.strip())
+    try:
+        obj["fixed_value"] = obj["value"].encode("latin-1").decode("utf-8")
+    except Exception:
+        obj["fixed_value"] = obj["value"]
+    out = json.dumps(obj, ensure_ascii=False)
+    try:
+        sys.stdout.write(out + "\n")
+    except UnicodeEncodeError:
+        sys.stdout.write((out + "\n").encode("utf-8"))
+'
+
+    # Try Perl first. Best chance of being available.
+    if command -v perl >/dev/null 2>&1; then
+        perl -MEncode=decode,encode -MJSON::PP -ne "$perl_script" 2>/dev/null
+    # Python3 fallback
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "$python_script" 2>/dev/null
+    # Python2 fallback
+    elif command -v python >/dev/null 2>&1; then
+        python -c "$python_script" 2>/dev/null
+    else
+        # No suitable tool found, return input unchanged
+        warn "No Perl or Python interpreter found. Cannot fix encoding issues."
+        jq -c '. + {fixed_value: .value}'
+    fi
+}
+
+POSITIONAL_ARGS=()
+
+FIX_ENCODING=0
+REMOVE_FIELDS=0
+FILTER_QUERY=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -h | --help)
+        help
+        ;;
+    --examples)
+        examples
+        ;;
+    -f | --fix)
+        FIX_ENCODING=1
+        ;;
+    -r | --remove)
+        REMOVE_FIELDS=1
+        ;;
+    --query)
+        FILTER_QUERY="$2"
+        shift
+        ;;
+    *)
+        POSITIONAL_ARGS+=("$1")
+        ;;
+    esac
+    shift
+done
+
+export ALLOWED_FLAGS=(
+    --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --force --header -k --insecure -l
+    --logMessage --maxJobs --noAccept -M --noColor --noCache --output -o --progress --raw --timeout --totalErrors
+    --workers --verbose
+)
+
+# Restore additional arguments
+set -- "${POSITIONAL_ARGS[@]}"
+
+validate_positional_args "$@"
+
+check_prerequisites
+
+# Build query for loading assets
+c8y_args=(
+    inventory find 
+    --includeAll 
+    --fragmentType "c8y_IsAsset"
+    --output json
+)
+
+if [ -n "$FILTER_QUERY" ]; then
+    c8y_args+=(--query "$FILTER_QUERY")
+fi
+
+# Load all assets
+assets=$(c8y "${c8y_args[@]}" 2>/dev/null)
+
+if is_empty_result_set "$assets"; then
+    info "No assets found."
+    exit 0
+fi
+
+total_assets=$(echo "$assets" | wc -l | tr -d ' ')
+info "Loaded $total_assets assets."
+
+# Step 1: Extract all fields with encoding issues across all assets in one pass
+fields_to_fix=$(echo "$assets" | jq -rc --arg pattern "Ã" '
+    . as $asset |
+    paths(type == "string") as $p |
+    ($p | map(tostring) | join(".")) as $path |
+    getpath($p) as $val |
+    # Skip system/URL fields
+    select($path | test("^(self|.*\\.self|.*\\.references\\[.*\\]\\.self|owner|creationTime|lastUpdated)$") | not) |
+    # Check if value contains Ã character (encoding issue indicator)
+    select($val | test($pattern)) |
+    {
+        id: $asset.id,
+        name: ($asset.name // "N/A"),
+        field: $path,
+        value: $val
+    }
+' 2>/dev/null)
+
+if [ -z "$fields_to_fix" ]; then
+    success "No encoding issues found in $total_assets assets."
+    exit 0
+fi
+
+issue_count=$(echo "$fields_to_fix" | wc -l | tr -d ' ')
+affected_asset_count=$(echo "$fields_to_fix" | jq -r '.id' | sort -u | wc -l | tr -d ' ')
+
+# Display issues found (print full JSON for each issue)
+echo "$fields_to_fix" | while IFS= read -r line; do
+    warn "Encoding issue: $line"
+done
+
+warn "Found encoding issues in $affected_asset_count out of $total_assets assets ($issue_count total fields)."
+
+if [ "$FIX_ENCODING" -eq 0 ] && [ "$REMOVE_FIELDS" -eq 0 ]; then
+    info "Use --fix flag to fix the encoding issues or --remove to remove broken fields."
+    exit 0
+fi
+
+if [ "$FIX_ENCODING" -eq 1 ] && [ "$REMOVE_FIELDS" -eq 1 ]; then
+    error "Cannot use both --fix and --remove flags together."
+    exit 1
+fi
+
+# Step 2: Fix or remove encoding issues
+if [ "$REMOVE_FIELDS" -eq 1 ]; then
+    info "Removing $issue_count broken fields..."
+    # Set fixed_value to null for removal
+    fixed_fields=$(echo "$fields_to_fix" | jq -c '. + {fixed_value: null}')
+else
+    info "Fixing $issue_count encoding issues in one batch..."
+    # Fix encoding using batch processor
+    fixed_fields=$(echo "$fields_to_fix" | fix_encoding_batch)
+fi
+
+# Step 3: Group fixes by asset and apply them
+info "Applying fixes to $affected_asset_count assets..."
+
+# Group fixed fields by asset ID
+asset_fixes=$(echo "$fixed_fields" | jq -s 'group_by(.id) | map({id: .[0].id, name: .[0].name, fixes: map({field: .field, original: .value, fixed: .fixed_value})})')
+
+# Build all update payloads with only changed fields
+update_payloads=""
+while IFS= read -r fix_group; do
+    asset_id=$(echo "$fix_group" | jq -r '.id')
+    
+    # Build minimal update payload with only id and changed fields
+    update_payload=$(echo "$fix_group" | jq --arg id "$asset_id" '{
+        id: $id
+    } + (
+        .fixes | 
+        reduce .[] as $fix (
+            {};
+            setpath($fix.field | split("."); $fix.fixed)
+        )
+    )')
+    
+    # Show what was fixed/removed
+    info_action="Fix"
+    if [ "$REMOVE_FIELDS" -eq 1 ]; then
+        info_action="Remove"
+    fi
+    echo "$fix_group" | jq -r '.fixes[] | "'"$info_action \(.field)"'"' | while IFS= read -r fix_msg; do
+        info "  $asset_id: $fix_msg"
+    done
+    
+    # Collect the update payload
+    update_payloads+="$update_payload"$'\n'
+done < <(echo "$asset_fixes" | jq -c '.[]')
+
+# Apply all updates via c8y
+if [ -n "$update_payloads" ]; then
+    result=$(
+        echo "$update_payloads" | 
+        grep -v '^$' | 
+        c8y inventory update --template "input.value" "${C8Y_FLAGS[@]}"
+    ) || {
+        error "Failed to update assets"
+        echo "$result" >&2
+        exit 1
+    }
+
+    if [ "$REQUIRES_OUTPUT" -eq 1 ] && [ -n "$result" ]; then
+        echo "$result"
+    fi
+
+    if [ "$REMOVE_FIELDS" -eq 1 ]; then
+        success "Successfully removed broken fields from $affected_asset_count assets."
+    else
+        success "Successfully fixed encoding issues in $affected_asset_count assets."
+    fi
+fi
+
+info "Done."
