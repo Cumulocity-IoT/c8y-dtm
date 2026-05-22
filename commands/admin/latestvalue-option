@@ -5,8 +5,8 @@
 # import shared functions
 
 # shellcheck source=/dev/null
-source "$(dirname "$0")/../_shared/helper"
-source "$(dirname "$0")/../_shared/constants"
+source "$(dirname "$0")/../../shared/helper"
+source "$(dirname "$0")/../../shared/constants"
 
 set -e
 
