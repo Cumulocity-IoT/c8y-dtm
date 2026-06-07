@@ -25,9 +25,14 @@ Description:
     subscribed to a microservice. The command is executed in a clean environment
     with credentials for each subtenant.
 
+    Provide microservice name using --microservice or --currentApplication for 
+    the command to run.   
 
 Flags:
-    --microservice <name>      Name of the microservice (required)
+    --microservice <name>      Name of the microservice
+    --currentApplication       Run command using current application credentials 
+                               (Use with service credentials of subscribed microservice)
+
     --tenants <list>           Comma-separated list of tenant ids to process (optional)
     -h, --help                 Show this help message
 
@@ -46,6 +51,10 @@ Examples:
     # List all subtenants for a microservice
     c8y microservices serviceusers get --id dtmmigration --output csv --includeAll --select tenant
 
+    # Get all managed objects opposite managed objects for all subtenants and redirect output to tenant-specific files
+    # Note: Redirecting output with > or --outputFile will automatically add tenant suffix to the filename for each subtenant
+    ./run-subtenants --currentApplication -- bash -lc 'c8y dtm migration opposites get --workers 20 > opposite.json'
+
 Requirements:
     - go-c8y-cli authenticated session
     - Microservice must be subscribed to subtenants
@@ -56,6 +65,7 @@ EOF
 
 # Default values
 MICROSERVICE_NAME=""
+USE_CURRENT_APPLICATION=false
 TENANT_FILTER=""
 COMMAND_ARGS=()
 
@@ -65,6 +75,10 @@ while [ $# -gt 0 ]; do
         --microservice)
             MICROSERVICE_NAME="$2"
             shift 2
+            ;;
+        --currentApplication)
+            USE_CURRENT_APPLICATION=true
+            shift
             ;;
         --tenants)
             TENANT_FILTER="$2"
@@ -86,8 +100,8 @@ while [ $# -gt 0 ]; do
 done
 
 # Validate arguments
-if [ -z "$MICROSERVICE_NAME" ]; then
-    error "Microservice name is required. Use --microservice option"
+if [ -z "$MICROSERVICE_NAME" ] && [ "$USE_CURRENT_APPLICATION" = false ]; then
+    error "Use --microservice or --currentApplication option"
     exit 1
 fi
 
@@ -108,6 +122,84 @@ if ! c8y currentuser get >/dev/null 2>&1; then
     exit 1
 fi
 
+# Helper function to add tenant suffix to filename used to redirect output, ensuring the tenant
+# identifier is included in the filename for each subtenant's output
+add_tenant_suffix() {
+    local file="$1"
+    local tenant="$2"
+    if [ -z "$file" ]; then
+        echo "$file"
+        return
+    fi
+    # Extract base filename and extension
+    local base="${file%.*}"
+    local ext="${file##*.}"
+    
+    # Check if extension was found (base and ext should differ if there's an extension)
+    if [ "$base" = "$ext" ]; then
+        # No extension, just append tenant suffix
+        echo "${file}-${tenant}"
+    else
+        # Extension exists, insert tenant suffix before it
+        echo "${base}-${tenant}.${ext}"
+    fi
+}
+
+# Process output redirection and --outputFile to include tenant suffix
+# Modifies cmd array in place to add tenant suffix to filenames
+process_output_redirects() {
+    local -n cmd_ref=$1
+    local tenant=$2
+    
+    for i in "${!cmd_ref[@]}"; do
+        # Handle --outputFile flag (standalone argument)
+        if [ "${cmd_ref[i]}" = "--outputFile" ] && [ $((i + 1)) -lt ${#cmd_ref[@]} ]; then
+            cmd_ref[i+1]="$(add_tenant_suffix "${cmd_ref[i+1]}" "$tenant")"
+        fi
+        
+        # Handle standalone > or >> operators
+        if [ "${cmd_ref[i]}" = ">" ] || [ "${cmd_ref[i]}" = ">>" ]; then
+            if [ $((i + 1)) -lt ${#cmd_ref[@]} ]; then
+                cmd_ref[i+1]="$(add_tenant_suffix "${cmd_ref[i+1]}" "$tenant")"
+            fi
+        fi
+        
+        # Handle redirects inside strings (e.g., bash -lc "cmd > file.json")
+        if [[ "${cmd_ref[i]}" =~ \>[^\>] ]]; then
+            local modified="${cmd_ref[i]}"
+            
+            # Replace --outputFile value patterns within string (single pass)
+            if [[ "$modified" =~ (--outputFile\ +)([^\ ]+) ]]; then
+                local prefix="${BASH_REMATCH[1]}"
+                local filename="${BASH_REMATCH[2]}"
+                local new_filename
+                new_filename="$(add_tenant_suffix "$filename" "$tenant")"
+                modified="${modified//"${BASH_REMATCH[0]}"/"${prefix}${new_filename}"}"
+            fi
+            
+            # Replace >> filename patterns (single pass, longer operator first)
+            if [[ "$modified" =~ (\>\>\ +)([^\ ]+) ]]; then
+                local op="${BASH_REMATCH[1]}"
+                local filename="${BASH_REMATCH[2]}"
+                local new_filename
+                new_filename="$(add_tenant_suffix "$filename" "$tenant")"
+                modified="${modified//"${BASH_REMATCH[0]}"/"${op}${new_filename}"}"
+            fi
+            
+            # Replace > filename patterns (single pass)
+            if [[ "$modified" =~ ([^>])\>\ +([^\ ]+) ]]; then
+                local prefix="${BASH_REMATCH[1]}"
+                local filename="${BASH_REMATCH[2]}"
+                local new_filename
+                new_filename="$(add_tenant_suffix "$filename" "$tenant")"
+                modified="${modified//"${BASH_REMATCH[0]}"/"${prefix}> ${new_filename}"}"
+            fi
+            
+            cmd_ref[i]="$modified"
+        fi
+    done
+}
+
 # Run a command in a clean shell with specific credentials
 run_in_c8y_shell() {
     local user="$1"
@@ -126,7 +218,13 @@ run_in_c8y_shell() {
 
     # Build command and inject credential flags at the end
     local cmd=("$@")
+    local rc
 
+    # Process output redirection to add tenant suffix to output filenames
+    process_output_redirects cmd "$tenant"
+    # echo "Running command for tenant '$tenant' (modified): ${cmd[*]}"
+
+    # Execute with bash -c to properly interpret shell syntax (redirects, pipes, etc.)
     env -i \
         PATH="$PATH" \
         HOME="$HOME" \
@@ -136,18 +234,32 @@ run_in_c8y_shell() {
         C8Y_TENANT="$tenant" \
         C8Y_USER="$user" \
         C8Y_PASSWORD="$pass" \
-        "${cmd[@]}"
+        bash -c "$(printf '%q ' "${cmd[@]}")" || rc=$?
+
+    return "${rc:-0}"
 }
 
-# Verify microservice exists
-microservice_exists=$(c8y microservices list --includeAll --output csv --select name | grep -Fx "$MICROSERVICE_NAME" || true)
-if [ -z "$microservice_exists" ]; then
-    error "Microservice '$MICROSERVICE_NAME' does not exist"
+subtenant_list=""
+if [ "$USE_CURRENT_APPLICATION" = true ]; then
+    # Get current application microservice name from session
+    subtenant_list=$(c8y currentapplication listSubscriptions --output json --includeAll)
+else 
+  # Verify microservice exists
+  microservice_exists=$(c8y microservices list --includeAll --output csv --select name | grep -Fx "$MICROSERVICE_NAME" || true)
+  if [ -z "$microservice_exists" ]; then
+      error "Microservice '$MICROSERVICE_NAME' does not exist"
+      exit 1
+  fi
+
+  # Get list of subtenants
+  subtenant_list=$(c8y microservices serviceusers get --id "$MICROSERVICE_NAME" --includeAll --output json)
+fi
+
+if [ -z "$subtenant_list" ] || [ "$subtenant_list" = "[]" ]; then
+    error "No subtenants subscribed to microservice: $MICROSERVICE_NAME"
     exit 1
 fi
 
-# Get list of subtenants
-subtenant_list=$(c8y microservices serviceusers get --id "$MICROSERVICE_NAME" --includeAll --output json)
 # Optionally filter by tenant ids if --tenants is set
 if [ -n "$TENANT_FILTER" ]; then
     subtenant_list=$(echo "$subtenant_list" | jq -c --arg tenants "$TENANT_FILTER" '($tenants | split(",")) as $arr | select(.tenant and (.tenant | IN($arr[])))')
@@ -156,7 +268,7 @@ fi
 # Single check: count non-empty lines and ensure > 0
 subtenant_count=$(echo "$subtenant_list" | sed '/^\s*$/d' | wc -l | tr -d ' ')
 if [ "${subtenant_count:-0}" -le 0 ]; then
-    error "No subtenants subscribed to microservice: $MICROSERVICE_NAME"
+    error "No subtenants subscribed to microservice matching tenant filter: $TENANT_FILTER"
     exit 1
 fi
 
