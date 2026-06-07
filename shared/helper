@@ -57,6 +57,39 @@ validate_positional_args() {
     done
 }
 
+hasFlag() {
+    local arg="${1#--}"
+    arg="${arg#-}"
+    for item in "${C8Y_FLAGS[@]}"; do
+        local normalized="${item#--}"
+        normalized="${normalized#-}"
+        if [ "$normalized" = "$arg" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+getFlagValue() {
+    local arg="${1#--}"
+    arg="${arg#-}"
+    local next_is_value=0
+    for item in "${C8Y_FLAGS[@]}"; do
+        if [ $next_is_value -eq 1 ]; then
+            echo "$item"
+            return 0
+        fi
+        local normalized="${item#--}"
+        normalized="${normalized#-}"
+        if [ "$normalized" = "$arg" ]; then
+            next_is_value=1
+        else
+            next_is_value=0
+        fi
+    done
+    return 1
+}
+
 # Function to check prerequisites
 check_prerequisites() {
     if ! command -v c8y >/dev/null 2>&1; then

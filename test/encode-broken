@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+import urllib.request
+import json
+import os
+import sys
+
+# Get C8y credentials from environment variables
+# These are set by c8y CLI or can be exported manually
+tenant = os.environ.get('C8Y_TENANT')
+host = os.environ.get('C8Y_HOST')
+token = os.environ.get('C8Y_TOKEN')
+
+if not all([tenant, host, token]):
+    print("ERROR: Required environment variables not set.", file=sys.stderr)
+    print("Please ensure C8Y_TENANT, C8Y_HOST, and C8Y_TOKEN are set.", file=sys.stderr)
+    print("\nYou can set them by running: c8y sessions set", file=sys.stderr)
+    sys.exit(1)
+
+# Get managed object ID from command line argument
+if len(sys.argv) < 2:
+    print("Usage: encode-broken <managed_object_id>", file=sys.stderr)
+    print("Example: encode-broken 99567200", file=sys.stderr)
+    sys.exit(1)
+
+managed_object_id = sys.argv[1]
+
+# Create broken encoding
+correct = "BARRAMENTO 13,8KV RÍGIDO TUBO ALUM NU"
+broken = correct.encode('utf-8').decode('latin-1')
+
+print(f"Creating broken encoding for managed object: {managed_object_id}")
+print(f"Correct text: {correct}")
+print(f"Broken text: {broken}")
+print(f"Broken text bytes: {broken.encode('utf-8').hex()}")
+
+# Send raw bytes - manually construct JSON to avoid any escaping
+# Build JSON string directly to preserve exact bytes
+json_str = '{"c8y_Notes":"' + broken + '"}'
+data = json_str.encode('utf-8')
+
+print(f"Sending {len(data)} bytes")
+print(f"Payload: {data[:100]}...")  # Show first 100 bytes
+
+# Send raw bytes
+url = f"https://{host}/inventory/managedObjects/{managed_object_id}"
+
+req = urllib.request.Request(
+    url,
+    data=data,
+    headers={
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json'
+    },
+    method='PUT'
+)
+
+try:
+    with urllib.request.urlopen(req) as response:
+        status_code = response.status
+        print(f"\nStatus: {status_code}")
+        if status_code >= 200 and status_code < 300:
+            print("✓ Successfully created broken encoding")
+        else:
+            print("✗ Failed to create broken encoding")
+            print(response.read().decode('utf-8'))
+except urllib.error.HTTPError as e:
+    print(f"\nStatus: {e.code}")
+    print("✗ Failed to create broken encoding")
+    print(e.read().decode('utf-8'))
+    sys.exit(1)

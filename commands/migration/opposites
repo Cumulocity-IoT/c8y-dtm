@@ -111,7 +111,7 @@ while [ $# -gt 0 ]; do
 done
 
 ALLOWED_FLAGS=(
-  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --output --progress --timeout --totalErrors --workers --verbose --raw
+  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFile --progress --timeout --totalErrors --workers --verbose --raw
 )
 
 checkModeIsSet

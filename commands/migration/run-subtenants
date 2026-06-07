@@ -45,15 +45,16 @@ Examples:
     c8y dtm migration run-subtenants --microservice myservice -- \\
         c8y inventory find --fragmentType c8y_IsAsset
 
+    # Get all opposite managed objects 
+    # Note: Redirecting output with > or --outputFile will automatically add tenant suffix 
+    c8y dtm migration run-subtenants --currentApplication -- \\ 
+        bash -lc 'c8y dtm migration opposites get --workers 20 > opposite.json'
+
     # List all microservices
     c8y microservices list --includeAll --output csv --select name
 
     # List all subtenants for a microservice
     c8y microservices serviceusers get --id dtmmigration --output csv --includeAll --select tenant
-
-    # Get all managed objects opposite managed objects for all subtenants and redirect output to tenant-specific files
-    # Note: Redirecting output with > or --outputFile will automatically add tenant suffix to the filename for each subtenant
-    ./run-subtenants --currentApplication -- bash -lc 'c8y dtm migration opposites get --workers 20 > opposite.json'
 
 Requirements:
     - go-c8y-cli authenticated session
