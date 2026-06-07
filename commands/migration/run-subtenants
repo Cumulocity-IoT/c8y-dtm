@@ -46,9 +46,12 @@ Examples:
         c8y inventory find --fragmentType c8y_IsAsset
 
     # Get all opposite managed objects 
-    # Note: Redirecting output with > or --outputFile will automatically add tenant suffix 
+    # Note: output files will be suffixed with tenant identifier to avoid conflicts
     c8y dtm migration run-subtenants --currentApplication -- \\ 
-        bash -lc 'c8y dtm migration opposites get --workers 20 > opposite.json'
+        c8y dtm migration opposites get --workers 20 --raw --outputFile opposite.json
+
+    c8y dtm migration run-subtenants --currentApplication -- bash -lc \
+      'c8y dtm migration opposites get --workers 20 | c8y util show --allowEmptyPipe --raw --outputFile opposites.json > /dev/null'
 
     # List all microservices
     c8y microservices list --includeAll --output csv --select name
@@ -146,8 +149,7 @@ add_tenant_suffix() {
     fi
 }
 
-# Process output redirection and --outputFile to include tenant suffix
-# Modifies cmd array in place to add tenant suffix to filenames
+# Process --outputFile to include tenant suffix in filenames
 process_output_redirects() {
     local -n cmd_ref=$1
     local tenant=$2
@@ -158,45 +160,14 @@ process_output_redirects() {
             cmd_ref[i+1]="$(add_tenant_suffix "${cmd_ref[i+1]}" "$tenant")"
         fi
         
-        # Handle standalone > or >> operators
-        if [ "${cmd_ref[i]}" = ">" ] || [ "${cmd_ref[i]}" = ">>" ]; then
-            if [ $((i + 1)) -lt ${#cmd_ref[@]} ]; then
-                cmd_ref[i+1]="$(add_tenant_suffix "${cmd_ref[i+1]}" "$tenant")"
-            fi
-        fi
-        
-        # Handle redirects inside strings (e.g., bash -lc "cmd > file.json")
-        if [[ "${cmd_ref[i]}" =~ \>[^\>] ]]; then
+        # Handle --outputFile inside strings (e.g., bash -lc "cmd --outputFile file.json")
+        if [[ "${cmd_ref[i]}" == *"--outputFile "* ]]; then
             local modified="${cmd_ref[i]}"
-            
-            # Replace --outputFile value patterns within string (single pass)
-            if [[ "$modified" =~ (--outputFile\ +)([^\ ]+) ]]; then
-                local prefix="${BASH_REMATCH[1]}"
-                local filename="${BASH_REMATCH[2]}"
+            if [[ "$modified" =~ (--outputFile[[:space:]]+)([^[:space:]]+) ]]; then
                 local new_filename
-                new_filename="$(add_tenant_suffix "$filename" "$tenant")"
-                modified="${modified//"${BASH_REMATCH[0]}"/"${prefix}${new_filename}"}"
+                new_filename="$(add_tenant_suffix "${BASH_REMATCH[2]}" "$tenant")"
+                cmd_ref[i]="${modified//"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}${new_filename}"}"
             fi
-            
-            # Replace >> filename patterns (single pass, longer operator first)
-            if [[ "$modified" =~ (\>\>\ +)([^\ ]+) ]]; then
-                local op="${BASH_REMATCH[1]}"
-                local filename="${BASH_REMATCH[2]}"
-                local new_filename
-                new_filename="$(add_tenant_suffix "$filename" "$tenant")"
-                modified="${modified//"${BASH_REMATCH[0]}"/"${op}${new_filename}"}"
-            fi
-            
-            # Replace > filename patterns (single pass)
-            if [[ "$modified" =~ ([^>])\>\ +([^\ ]+) ]]; then
-                local prefix="${BASH_REMATCH[1]}"
-                local filename="${BASH_REMATCH[2]}"
-                local new_filename
-                new_filename="$(add_tenant_suffix "$filename" "$tenant")"
-                modified="${modified//"${BASH_REMATCH[0]}"/"${prefix}> ${new_filename}"}"
-            fi
-            
-            cmd_ref[i]="$modified"
         fi
     done
 }
