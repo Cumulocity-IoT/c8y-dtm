@@ -114,7 +114,7 @@ set -- "${POSITIONAL_ARGS[@]}"
 
 # Check if ID template is provided
 if [ -z "$ID_TEMPLATE" ]; then
-    error "The --id-template argument is required." "See 'c8y dtm migration externalids-create --help' for details."
+    error "The --id-template argument is required." "See 'c8y dtm migration externalids-check --help' for details."
     exit 1
 fi
 
