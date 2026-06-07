@@ -276,6 +276,7 @@ elif [ "$MODE" = "verify" ]; then
     )
     set -e
 
+    echo "$result" > "errors.json"
     error_count=0
 
     while read -r id error error_msg; do
