@@ -111,7 +111,7 @@ while [ $# -gt 0 ]; do
 done
 
 ALLOWED_FLAGS=(
-  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFile --progress --timeout --totalErrors --workers --verbose --raw
+  --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache --output --progress --timeout --totalErrors --workers --verbose --raw
 )
 
 checkModeIsSet
@@ -171,13 +171,9 @@ if [ "$MODE" = "create" ]; then
     # Get only the data we need for the next steps, and simplify the structure for easier processing
     explodedSeries=$(explode_assets_with_linked_series)
     total_collected=$(count_lines "$explodedSeries")
-
     info "Found $total_collected links to create opposite references."
 
-    childAdditions=$(
-      printf '%s' "$explodedSeries" | 
-      jq -c -s '
-        map({
+    childAdditions=$(printf '%s' "$explodedSeries" | jq -c -s 'map({
             source_id: .c8y_LinkedSeries.source.id,
             linked_asset: (
                 . as $parent |
@@ -185,50 +181,18 @@ if [ "$MODE" = "create" ]; then
                     asset: ($parent.c8y_LinkedSeries | del(.source) + {id: $parent.id})
                 } + ($parent.c8y_LinkedSeries.source | del(.id))
             )
-        }) |
-        group_by(.source_id) |
-        map({
+        })
+        | group_by(.source_id)
+        | map({
             id: .[0].source_id,
             c8y_LinkedAssets: map(.linked_asset)
-        }) | 
-        .[]
-      '
-    )
+        })
+        | .[]')
 
-    # source devices might not exist, filter non-existing ones by checking before creating child additions
-    # to avoid creating child additions with missing source references.
-    set +e
-    filteredList=$(
-      echo "$childAdditions" | 
-      c8y inventory get \
-            --withError \
-            --silentExit \
-            --abortOnErrors 20000 \
-            --workers 20 \
-            --raw \
-            --outputTemplate '
-                local isError = output == null || !std.isObject(output) || std.objectHas(output, "errorType");
-                if isError then
-                    []
-                else
-                    input.value + { "verification": "exists" }
-              ' | 
-                  jq -c 'select(.verification == "exists") | del(.verification)'
-    )
-    
-    filteredList_rc=$?
-    set -e
-
-    if [ "$filteredList_rc" -ne 0 ]; then
-        warn "Filtered non-existing source devices from linked series."
-    fi
-
-    echo "$filteredList" | c8y devices children create \
-        --childType "addition" \
-        --silentExit \
-        --abortOnErrors 20000 \
-        --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets, type: "c8y_LinkedSeriesReverseIndex" }' \
-        "${C8Y_FLAGS[@]}"
+    echo "$childAdditions" | c8y devices children create \
+            --childType "addition" \
+            --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets, type: "c8y_LinkedSeriesReverseIndex" }' \
+            "${C8Y_FLAGS[@]}"
 
     # to use the opposite endpoint, 
     # echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
@@ -304,7 +268,6 @@ elif [ "$MODE" = "verify" ]; then
       c8y inventory children list \
           --childType addition \
           --withError \
-          --abortOnErrors 20000 \
           --silentExit \
           --query "type eq c8y_LinkedSeriesReverseIndex" \
           --raw \
