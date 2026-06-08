@@ -49,6 +49,7 @@ exit 0
 # Default values
 POSITIONAL_ARGS=()
 MODE=""
+ABORT_ON_ERRORS="${C8Y_DTM_ABORT_ON_ERRORS:-1000000}"
 
 checkDefiningModeTwice() {
     if [ -n "$MODE" ]; then
@@ -175,36 +176,44 @@ if [ "$MODE" = "create" ]; then
     info "Found $total_collected links to create opposite references."
 
     childAdditions=$(
-      printf '%s' "$explodedSeries" | 
-      jq -c -s '
-        map({
-            source_id: .c8y_LinkedSeries.source.id,
-            linked_asset: (
-                . as $parent |
-                {
-                    asset: ($parent.c8y_LinkedSeries | del(.source) + {id: $parent.id})
-                } + ($parent.c8y_LinkedSeries.source | del(.id))
-            )
-        }) |
-        group_by(.source_id) |
-        map({
-            id: .[0].source_id,
-            c8y_LinkedAssets: map(.linked_asset)
-        }) | 
-        .[]
-      '
+      printf '%s' "$explodedSeries" \
+        | jq -c -s '
+            map({
+                source_id: .c8y_LinkedSeries.source.id,
+                linked_asset: (
+                    . as $parent |
+                    {
+                        asset: ($parent.c8y_LinkedSeries | del(.source) + {id: $parent.id})
+                    } + ($parent.c8y_LinkedSeries.source | del(.id))
+                )
+            }) |
+            group_by(.source_id) |
+            map({
+                id: .[0].source_id,
+                c8y_LinkedAssets: map(.linked_asset)
+            }) | 
+            .[]
+          '
     )
 
-    # source devices might not exist, filter non-existing ones by checking before creating child additions
-    # to avoid creating child additions with missing source references.
+    # Source devices might not exist, filter non-existing devices by checking before creating child additions
+    # to avoid creating child additions with missing source references. This would happen, as 
+    # c8y devices children create --childType "addition" creates the object first and fails only when 
+    # assigning the new managed object to the source device as a child addition keeping stale managed objects.
+
+    # Using a workaround to filter out non-existing source devices by checking existence with inventory get 
+    # as c8y inventory assert exists does not support parallel workers and would be too slow for large datasets. 
+    # Once assert exists supports workers, we can switch to that and remove the workaround.
+    # echo "$childAdditions" | c8y inventory assert exists --attempts 1 --workers 20
+
     set +e
     filteredList=$(
-      echo "$childAdditions" | 
-      c8y inventory get \
+      echo "$childAdditions" \
+        | c8y inventory get \
             --withError \
             --silentExit \
-            --abortOnErrors 20000 \
-            --workers 20 \
+            --silentStatusCodes 404 \
+            --abortOnErrors "$ABORT_ON_ERRORS" \
             --raw \
             --outputTemplate '
                 local isError = output == null || !std.isObject(output) || std.objectHas(output, "errorType");
@@ -212,21 +221,19 @@ if [ "$MODE" = "create" ]; then
                     []
                 else
                     input.value + { "verification": "exists" }
-              ' | 
-                  jq -c 'select(.verification == "exists") | del(.verification)'
+              ' \
+        | jq -c 'select(.verification == "exists") | del(.verification)'
     )
-    
-    filteredList_rc=$?
     set -e
 
-    if [ "$filteredList_rc" -ne 0 ]; then
-        warn "Filtered non-existing source devices from linked series."
+    missing_count=$(($(count_lines "$childAdditions") - $(count_lines "$filteredList")))
+    existing_count=$(count_lines "$filteredList")
+    if [ "$missing_count" -gt 0 ]; then
+        warn "Filtered $missing_count non-existing source devices." "Opposites will be created for $existing_count devices."
     fi
 
     echo "$filteredList" | c8y devices children create \
         --childType "addition" \
-        --silentExit \
-        --abortOnErrors 20000 \
         --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets, type: "c8y_LinkedSeriesReverseIndex" }' \
         "${C8Y_FLAGS[@]}"
 
@@ -238,12 +245,13 @@ elif [ "$MODE" = "verify" ]; then
     assets_with_linked_series=$(load_assets_with_linked_series) || exit 0
 
     # Get only the data we need for the next steps, and simplify the structure for easier processing
-    explodedSeries=$(explode_assets_with_linked_series |
-      jq -c '{ 
-          "c8y_LinkedSeries": .c8y_LinkedSeries, 
-          "assetId": .id, 
-          "id": .c8y_LinkedSeries.source.id 
-      }'
+    explodedSeries=$(
+      explode_assets_with_linked_series \
+        | jq -c '{ 
+              "c8y_LinkedSeries": .c8y_LinkedSeries, 
+              "assetId": .id, 
+              "id": .c8y_LinkedSeries.source.id 
+          }'
     )
     total_collected=$(count_lines "$explodedSeries")
     info "Found $total_collected links to verify."
@@ -304,8 +312,9 @@ elif [ "$MODE" = "verify" ]; then
       c8y inventory children list \
           --childType addition \
           --withError \
-          --abortOnErrors 20000 \
+          --abortOnErrors "$ABORT_ON_ERRORS" \
           --silentExit \
+          --silentStatusCodes 404 \
           --query "type eq c8y_LinkedSeriesReverseIndex" \
           --raw \
           --outputTemplate "$output_template" \
@@ -313,7 +322,6 @@ elif [ "$MODE" = "verify" ]; then
     )
     set -e
 
-    echo "$result" > "errors.json"
     error_count=0
 
     while read -r id error error_msg; do
