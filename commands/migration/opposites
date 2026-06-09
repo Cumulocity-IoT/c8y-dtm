@@ -28,8 +28,9 @@ Description:
     In get mode, all opposite references are retrieved and displayed.
 
 Flags:
-    -h, --help   Show this help message
-    --id         Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
+    -h, --help             Show this help message
+    --id                   Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
+    --includeParentDevice  Include parent device details in get mode output. Only used for get mode.
 
 Examples:
     c8y dtm migration opposites create
@@ -38,6 +39,7 @@ Examples:
     c8y dtm migration opposites verify --id "12345"
     c8y dtm migration opposites verify --id "My Asset Name"
     c8y dtm migration opposites get
+    c8y dtm migration opposites get --includeParentDevice
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -71,7 +73,15 @@ checkAllowedSingleIdUsage() {
     fi
 }
 
+checkGetOnlyFlagUsage() {
+    if [ "$INCLUDE_PARENT_DEVICE" = "true" ] && [ "$MODE" != "get" ]; then
+        error "Bad args:" "--includeParentDevice can only be used with 'get' mode."
+        exit 1
+    fi
+}
+
 SINGLE_ID=""
+INCLUDE_PARENT_DEVICE="false"
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -87,6 +97,9 @@ while [ $# -gt 0 ]; do
             SINGLE_ID="$2"
             info "Single asset mode enabled. Will only process asset with id/name '$SINGLE_ID'."
             shift
+            ;;
+        --includeParentDevice)
+            INCLUDE_PARENT_DEVICE="true"
             ;;
         create)
             checkDefiningModeTwice
@@ -112,11 +125,12 @@ while [ $# -gt 0 ]; do
 done
 
 ALLOWED_FLAGS=(
-  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --filter --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFile --progress --timeout --totalErrors --workers --verbose --raw
+  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --filter --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFile --progress --select --timeout --totalErrors --workers --verbose --raw
 )
 
 checkModeIsSet
 checkAllowedSingleIdUsage
+checkGetOnlyFlagUsage
 
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
@@ -349,10 +363,10 @@ elif [ "$MODE" = "verify" ]; then
     ')
   
     if [ "$error_count" -gt 0 ]; then
-        error "Verification errors." "Verification of $(count_lines "$assets_with_linked_series") assets with linked series found with $error_count errors." 
+        error "Verification errors." "Verification of $(count_lines "$assets_with_linked_series") assets with linked series found $error_count errors." 
         exit 1
     else
-        success "Verification completed successfully. All linked series have corresponding opposite references."
+        success "Verification completed successfully." "All linked series have corresponding opposite references."
         exit 0
     fi
 elif [ "$MODE" = "clear" ]; then
@@ -360,10 +374,23 @@ elif [ "$MODE" = "clear" ]; then
     c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"
 elif [ "$MODE" = "get" ]; then
     info "Retrieving opposite references..."
-    c8y inventory list \
-        --type "c8y_LinkedSeriesReverseIndex" \
-        --includeAll \
-        --raw \
-        --filter "managedObjects lengt 0" \
-        "${C8Y_FLAGS[@]}"
+
+    child_additions=$(
+        c8y inventory list \
+            --type "c8y_LinkedSeriesReverseIndex" \
+            --includeAll \
+            --raw \
+            --filter "managedObjects lengt 0" \
+        | jq '.managedObjects[]'
+    )
+
+    if [ "$INCLUDE_PARENT_DEVICE" = "true" ]; then
+        echo "$child_additions" \
+            | c8y inventory parents get --type addition --outputTemplate '
+                input.value + { "parentDevice": output }
+            ' \
+            "${C8Y_FLAGS[@]}"
+    else
+        echo "$child_additions" | c8y util show "${C8Y_FLAGS[@]}"
+    fi
 fi
