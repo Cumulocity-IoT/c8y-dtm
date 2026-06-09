@@ -264,12 +264,8 @@ elif [ "$MODE" = "verify" ]; then
 
     output_template='
       local hasValue(obj, field) = std.isObject(obj) && std.objectHas(obj, field) && obj[field] != null && std.toString(obj[field]) != "";
-      if std.isString(output) then
-        input.value + { "error": "OutputIsStringError"}
-      else if output == null then
-        input.value + { "error": "OutputIsNullError"}
-      else if !std.isObject(output) then
-        input.value + { "error": "OutputNotObjectError"}
+      if std.isString(output) || !std.isObject(output) || !std.isObject(input.value) then
+        input.value + { "error": "InvalidInputError"}
       else if hasValue(output, "errorType") then
         input.value + output + { "error": "ServerError"}
       else if !hasValue(output, "references") then
@@ -313,8 +309,6 @@ elif [ "$MODE" = "verify" ]; then
           --childType addition \
           --withError \
           --abortOnErrors "$ABORT_ON_ERRORS" \
-          --silentExit \
-          --silentStatusCodes 404 \
           --query "type eq c8y_LinkedSeriesReverseIndex" \
           --raw \
           --outputTemplate "$output_template" \
@@ -354,7 +348,13 @@ elif [ "$MODE" = "verify" ]; then
         end
     ')
   
-    success "Completed checking $(count_lines "$assets_with_linked_series") assets with linked series. Found $error_count errors."
+    if [ "$error_count" -gt 0 ]; then
+        error "Verification errors." "Verification of $(count_lines "$assets_with_linked_series") assets with linked series found with $error_count errors." 
+        exit 1
+    else
+        success "Verification completed successfully. All linked series have corresponding opposite references."
+        exit 0
+    fi
 elif [ "$MODE" = "clear" ]; then
     info "Clearing opposite references..."
     c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"
