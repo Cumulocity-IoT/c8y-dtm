@@ -31,6 +31,7 @@ Flags:
     -h, --help             Show this help message
     --id                   Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
     --includeParentDevice  Include parent device details in get mode output. Only used for get mode.
+    --safeOutputFile FILE  Write output to FILE only if non-empty. Empty files are not created. Only used for get mode.
 
 Examples:
     c8y dtm migration opposites create
@@ -40,6 +41,7 @@ Examples:
     c8y dtm migration opposites verify --id "My Asset Name"
     c8y dtm migration opposites get
     c8y dtm migration opposites get --includeParentDevice
+    c8y dtm migration opposites get --safeOutputFile "output.json"
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -82,6 +84,7 @@ checkGetOnlyFlagUsage() {
 
 SINGLE_ID=""
 INCLUDE_PARENT_DEVICE="false"
+SAFE_OUTPUT_FILE=""
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -100,6 +103,10 @@ while [ $# -gt 0 ]; do
             ;;
         --includeParentDevice)
             INCLUDE_PARENT_DEVICE="true"
+            ;;
+        --safeOutputFile)
+            SAFE_OUTPUT_FILE="$2"
+            shift
             ;;
         create)
             checkDefiningModeTwice
@@ -125,7 +132,7 @@ while [ $# -gt 0 ]; do
 done
 
 ALLOWED_FLAGS=(
-  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --filter --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFile --progress --select --timeout --totalErrors --workers --verbose --raw
+  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --filter --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFile --outputFileRaw --progress --select --timeout --totalErrors --workers --verbose --raw
 )
 
 checkModeIsSet
@@ -375,22 +382,46 @@ elif [ "$MODE" = "clear" ]; then
 elif [ "$MODE" = "get" ]; then
     info "Retrieving opposite references..."
 
-    child_additions=$(
+    response_json=$(
         c8y inventory list \
             --type "c8y_LinkedSeriesReverseIndex" \
             --includeAll \
-            --raw \
-            --filter "managedObjects lengt 0" \
-        | jq '.managedObjects[]'
+            --raw
     )
 
+    count=$(echo "$response_json" | jq -s 'map((.managedObjects // []) | length) | add // 0')
+    if [ "$count" -eq 0 ]; then
+        info "No opposite references found."
+        exit 0
+    fi
+
+    child_additions=$(echo "$response_json" | jq -c '.managedObjects[]?')
+
+    info "Found $count opposite references."
+
+    # Prepare output 
     if [ "$INCLUDE_PARENT_DEVICE" = "true" ]; then
-        echo "$child_additions" \
-            | c8y inventory parents get --type addition --outputTemplate '
-                input.value + { "parentDevice": output }
-            ' \
-            "${C8Y_FLAGS[@]}"
+        output=$(
+            echo "$child_additions" \
+                | c8y inventory parents get --type addition --workers 10 --output json --outputTemplate '
+                    input.value + { "parentDevice": output }
+                ' \
+                | c8y util show "${C8Y_FLAGS[@]}"
+        )
     else
-        echo "$child_additions" | c8y util show "${C8Y_FLAGS[@]}"
+        output=$(echo "$child_additions" | c8y util show "${C8Y_FLAGS[@]}")
+    fi
+
+    # Write output (to file if specified, otherwise to stdout)
+    if [ -n "$SAFE_OUTPUT_FILE" ]; then
+        resultCount=$(count_lines "$output")
+        info "Output contains $resultCount items."
+        if [ "$resultCount" -eq 0 ]; then
+            exit 0
+        fi
+        echo "$output" > "$SAFE_OUTPUT_FILE"
+    else
+        # Output to stdout
+        echo "$output"
     fi
 fi

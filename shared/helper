@@ -133,10 +133,12 @@ count_lines() {
 
 is_empty_result_set() {
     local input="$1"
+    local stripped
+    stripped="${input//[$' \t\n\r']/}"
     local total_collected
     total_collected=$(count_lines "$input")
     
-    if [ -z "$input" ] || [ "$total_collected" -eq 0 ] || [ "$input" = "null" ] || [ "$input" = "[]" ]; then
+    if [ -z "$stripped" ] || [ "$total_collected" -eq 0 ] || [ "$stripped" = "null" ] || [ "$stripped" = "[]" ]; then
         return 0
     fi
     return 1
