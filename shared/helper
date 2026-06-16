@@ -158,6 +158,19 @@ is_not_empty_result_set() {
     return 0
 }
 
+has_flag() {
+    local arg="${1#--}"
+    arg="${arg#-}"
+    for item in "${C8Y_FLAGS[@]}"; do
+        local normalized="${item#--}"
+        normalized="${normalized#-}"
+        if [ "$normalized" = "$arg" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 load_all_assets() {
     local select_fields=("id" "self" "c8y_ExternalId")
     local required_fields=()
