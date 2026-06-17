@@ -136,15 +136,14 @@ is_empty_result_set() {
     if [ -z "$input" ]; then
         return 0
     fi
-    local total_collected
-    total_collected=$(count_lines "$input")
-    if [ "$total_collected" -gt 1 ]; then
+    # Fast pure-bash multi-line check (avoids subshell + wc -l overhead)
+    if [[ "$input" == *$'\n'* ]]; then
         return 1
     fi
-    # Only do expensive stripping for single-line inputs
-    local stripped
-    stripped="${input//[$' \t\n\r']/}"
-    if [ -z "$stripped" ] || [ "$stripped" = "null" ] || [ "$stripped" = "[]" ]; then
+
+    # Check if single-line input is blank, null, or [] (regex short-circuits on real JSON)
+    # stripped="${input//[$' \t\n\r']/}" is too slow for multi-KB inputs
+    if [[ "$input" =~ ^[[:space:]]*(null|\[\])[[:space:]]*$ ]] || [[ "$input" =~ ^[[:space:]]*$ ]]; then
         return 0
     fi
     return 1
@@ -162,6 +161,8 @@ has_flag() {
     local arg="${1#--}"
     arg="${arg#-}"
     for item in "${C8Y_FLAGS[@]}"; do
+        # Only consider actual flags, not their values
+        [[ "$item" == -* ]] || continue
         local normalized="${item#--}"
         normalized="${normalized#-}"
         if [ "$normalized" = "$arg" ]; then
@@ -234,6 +235,8 @@ load_all_assets() {
     else
         page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
     fi
+
+    warn "Loaded $(count_lines "$page_result") assets from inventory"
 
     echo -n "$page_result"
 }

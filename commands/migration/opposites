@@ -31,7 +31,7 @@ Flags:
     -h, --help             Show this help message
     --id                   Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
     --includeParentDevice  Include parent device details in get mode output. Only used for get mode.
-    --outputFile FILE      Write output to FILE only if non-empty. Empty files are not created. Only used for get mode.
+    --outputFile FILE      Write output to FILE only if non-empty. Empty files are not created. Only used for get/verify mode.
 
 Examples:
     c8y dtm migration opposites create
@@ -75,9 +75,13 @@ checkAllowedSingleIdUsage() {
     fi
 }
 
-checkGetOnlyFlagUsage() {
+checkGetFlagUsage() {
     if [ "$INCLUDE_PARENT_DEVICE" = "true" ] && [ "$MODE" != "get" ]; then
         error "Bad args:" "--includeParentDevice can only be used with 'get' mode."
+        exit 1
+    fi
+    if [ -n "$SAFE_OUTPUT_FILE" ] && [ "$MODE" != "get" ] && [ "$MODE" != "verify" ]; then
+        error "Bad args:" "--outputFile can only be used with 'get' or 'verify' mode."
         exit 1
     fi
 }
@@ -97,6 +101,10 @@ while [ $# -gt 0 ]; do
                 error "Bad args:" "Cannot specify --id more than once. Already set to '$SINGLE_ID'."
                 exit 1
             fi
+            if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+                error "Bad args:" "--id requires an ID argument."
+                exit 1
+            fi
             SINGLE_ID="$2"
             info "Single asset mode enabled. Will only process asset with id/name '$SINGLE_ID'."
             shift
@@ -105,6 +113,14 @@ while [ $# -gt 0 ]; do
             INCLUDE_PARENT_DEVICE="true"
             ;;
         --outputFile)
+            if [ -n "$SAFE_OUTPUT_FILE" ]; then
+                error "Bad args:" "Cannot specify --outputFile more than once. Already set to '$SAFE_OUTPUT_FILE'."
+                exit 1
+            fi
+            if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+                error "Bad args:" "--outputFile requires a FILE argument."
+                exit 1
+            fi
             SAFE_OUTPUT_FILE="$2"
             shift
             ;;
@@ -131,13 +147,14 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# shellcheck disable=SC2034 # Used by validate_positional_args() from shared/helper.
 ALLOWED_FLAGS=(
-  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --filter --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFile --outputFileRaw --progress --select --timeout --totalErrors --workers --verbose --raw
+  --abortOnErrors --force -f --cache --cacheBodyPaths --cacheTTL --debug --delay --delayBefore --dry --filter --header -k --insecure -l --logMessage --maxJobs --noAccept -M --noColor --noCache -o --output --outputFileRaw --progress --select --timeout --totalErrors --workers --verbose --raw
 )
 
 checkModeIsSet
 checkAllowedSingleIdUsage
-checkGetOnlyFlagUsage
+checkGetFlagUsage
 
 # Restore additional arguments
 set -- "${POSITIONAL_ARGS[@]}"
@@ -316,11 +333,18 @@ elif [ "$MODE" = "verify" ]; then
           --outputTemplate "$output_template" \
           "${C8Y_FLAGS[@]}" 2>/dev/null
     )
+    list_exit_code=$?
     set -e
+    
     error_count=0
     error_items=$(echo "$result" | jq -c 'select(.error != null or .c8yError != null)')
 
-    if has_flag "--output" || has_flag "--outputFileRaw" || has_flag "--outputFile"  || has_flag "--raw"; then
+    if [ "$list_exit_code" -ne 0 ] && [ -z "$error_items" ] ; then
+        error "Verification failed." "Failed to load child additions (command failed or was aborted)."
+        exit 1
+    fi
+
+    if [ -n "$SAFE_OUTPUT_FILE" ] || has_flag "--output" || has_flag "--outputFileRaw" || has_flag "--raw"; then
         if [ -n "$SAFE_OUTPUT_FILE" ]; then
             resultCount=$(count_lines "$result")
             if [ "$resultCount" -gt 0 ]; then
@@ -363,8 +387,8 @@ elif [ "$MODE" = "verify" ]; then
     ')
   
     if [ "$error_count" -gt 0 ]; then
-        error "Verification errors." "Verification of $(count_lines "$assets_with_linked_series") assets " + \
-              "with ${total_collected} linked series linked to $(count_lines "$uniqueDevices") devices found $error_count errors." 
+        message="Verification of $(count_lines "$assets_with_linked_series") assets with ${total_collected} linked series linked to $(count_lines "$uniqueDevices") devices found $error_count errors."
+        error "Verification errors." "$message"
         exit 1
     else
         success "Verification completed successfully." "All ${total_collected} linked series have opposite references."
