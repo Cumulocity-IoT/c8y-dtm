@@ -344,7 +344,7 @@ elif [ "$MODE" = "verify" ]; then
         exit 1
     fi
 
-    if [ -n "$SAFE_OUTPUT_FILE" ] || has_flag "--output" || has_flag "--outputFileRaw" || has_flag "--raw"; then
+   if [ -n "$SAFE_OUTPUT_FILE" ] || has_flag "--output" || has_flag "-o" || has_flag "--outputFileRaw" || has_flag "--raw"; then
         if [ -n "$SAFE_OUTPUT_FILE" ]; then
             resultCount=$(count_lines "$result")
             if [ "$resultCount" -gt 0 ]; then
@@ -364,7 +364,7 @@ elif [ "$MODE" = "verify" ]; then
             continue
         fi
         error "$id $error" "$error_msg"
-    done < <(echo "$error_items" | jq -c -s 'sort_by(.assetId) | .[] |
+    done < <(echo "$error_items" | jq -r -s 'sort_by(.assetId) | .[] |
         if .c8yError != null then
             "CumulocityError - " + .c8yError.message + " (asset " + (.assetId|tostring) + ", " + (.c8y_LinkedSeries.fragment|tostring) +"." + (.c8y_LinkedSeries.series|tostring) + ")"
         elif .error == "NoChildAdditionsError" then
