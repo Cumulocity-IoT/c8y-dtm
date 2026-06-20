@@ -53,6 +53,14 @@ Examples:
     c8y dtm migration run-subtenants --currentApplication -- bash -lc \
       'c8y dtm migration opposites get --workers 20 | c8y util show --allowEmptyPipe --raw --outputFile opposites.json > /dev/null'
 
+    # NOTE: when using bash -lc/-c, any query values that contain parentheses
+    # must be single-quoted inside the script string, otherwise bash interprets
+    # '(' as function-definition syntax and raises a syntax error.
+    #
+    #  -- bash -lc "c8y ... --query 'hasany(c8y_LinkedSeries.source.id)'"
+    #
+    # Prefer passing scripts directly instead of bash -lc when possible
+
     # List all microservices
     c8y microservices list --includeAll --output csv --select name
 
@@ -135,6 +143,13 @@ add_tenant_suffix() {
         echo "$file"
         return
     fi
+
+    # Skip if filename already contains the tenant suffix
+    if [[ "$file" == *"C8Y_TENANT"* ]]; then
+        echo "$file"
+        return
+    fi
+    
     # Extract base filename and extension
     local base="${file%.*}"
     local ext="${file##*.}"
@@ -149,27 +164,37 @@ add_tenant_suffix() {
     fi
 }
 
-# Process --outputFile to include tenant suffix in filenames
-process_output_redirects() {
+# Process a single output redirection flag to include tenant suffix in filenames
+process_output_flag() {
     local -n cmd_ref=$1
     local tenant=$2
+    local flag=$3
     
     for i in "${!cmd_ref[@]}"; do
-        # Handle --outputFile flag (standalone argument)
-        if [ "${cmd_ref[i]}" = "--outputFile" ] && [ $((i + 1)) -lt ${#cmd_ref[@]} ]; then
+        # Handle flag (standalone argument)
+        if [ "${cmd_ref[i]}" = "$flag" ] && [ $((i + 1)) -lt ${#cmd_ref[@]} ]; then
             cmd_ref[i+1]="$(add_tenant_suffix "${cmd_ref[i+1]}" "$tenant")"
         fi
         
-        # Handle --outputFile inside strings (e.g., bash -lc "cmd --outputFile file.json")
-        if [[ "${cmd_ref[i]}" == *"--outputFile "* ]]; then
+        # Handle flag inside strings (e.g., bash -lc "cmd --outputFile file.json")
+        if [[ "${cmd_ref[i]}" == *"${flag} "* ]]; then
             local modified="${cmd_ref[i]}"
-            if [[ "$modified" =~ (--outputFile[[:space:]]+)([^[:space:]]+) ]]; then
+            if [[ "$modified" =~ (${flag}[[:space:]]+)([^[:space:]]+) ]]; then
                 local new_filename
                 new_filename="$(add_tenant_suffix "${BASH_REMATCH[2]}" "$tenant")"
                 cmd_ref[i]="${modified//"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}${new_filename}"}"
             fi
         fi
     done
+}
+
+# Process --outputFile and --outputFileRaw to include tenant suffix in filenames
+process_output_redirects() {
+    local array_name=$1
+    local tenant=$2
+    
+    process_output_flag "$array_name" "$tenant" "--outputFile"
+    process_output_flag "$array_name" "$tenant" "--outputFileRaw"
 }
 
 # Run a command in a clean shell with specific credentials
