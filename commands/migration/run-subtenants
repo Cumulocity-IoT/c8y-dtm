@@ -144,12 +144,15 @@ add_tenant_suffix() {
         return
     fi
 
-    # Skip if filename already contains the tenant suffix
+    # If the user already uses the tenant placeholder in the filename, expand it
+    # here to keep the name tenant-specific and avoid appending the tenant twice.
     if [[ "$file" == *"C8Y_TENANT"* ]]; then
+        file="${file//\$C8Y_TENANT/$tenant}"
+        file="${file//\$\{C8Y_TENANT\}/$tenant}"
         echo "$file"
         return
     fi
-    
+
     # Extract base filename and extension
     local base="${file%.*}"
     local ext="${file##*.}"
