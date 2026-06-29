@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+---
+$schema: https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+group:
+  name: propertydefinitions
+  description: Manage Property Definitions
+commands:
+  - name: detail
+    description: Retrieve a Property Definition by identifier.
+    method: GET
+    path: service/dtm/definitions/properties/{identifier}
+    descriptionLong: |
+      Retrieves an existing Property Definition by its unique identifier.
+
+      Use the applicableTo query parameter to filter by the domain entity the property applies to.
+    pathParameters:
+      - name: identifier
+        type: string
+        description: Unique identifier of the Property Definition.
+        pipeline: true
+        pipelineAliases:
+          - id
+          - identifier
+    queryParameters:
+      - name: applicableTo
+        type: string
+        description: Filter by domain entity (measurement, event, alarm, audit, operation, asset, tenant_option).
+        required: false
+  - name: update
+    description: Update an existing Property Definition.
+    method: PUT
+    path: service/dtm/definitions/properties/{identifier}
+    descriptionLong: |
+      Updates an existing Property Definition identified by the path parameter.
+
+      The JSON schema, title, description, contexts, and tags of the definition can be updated.
+      Use the contexts query parameter to restrict the update to specific domain entities.
+    pathParameters:
+      - name: identifier
+        type: string
+        description: Unique identifier of the Property Definition.
+        pipeline: true
+        pipelineAliases:
+          - id
+          - identifier
+    queryParameters:
+      - name: contexts
+        type: string[]
+        description: Domain entities to restrict the update to (measurement, event, alarm, audit, operation, asset, tenant_option).
+        required: false
+  - name: delete
+    description: Delete an existing Property Definition.
+    method: DELETE
+    path: service/dtm/definitions/properties/{identifier}
+    descriptionLong: |
+      Deletes an existing Property Definition by its unique identifier.
+
+      Use the contexts query parameter to restrict deletion to specific domain entities.
+    pathParameters:
+      - name: identifier
+        type: string
+        description: Unique identifier of the Property Definition.
+        pipeline: true
+        pipelineAliases:
+          - id
+          - identifier
+    queryParameters:
+      - name: contexts
+        type: string[]
+        description: Domain entities to match exactly for deletion (measurement, event, alarm, audit, operation, asset, tenant_option).
+        required: false

@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+---
+$schema: https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+group:
+  name: eventdefinitions
+  description: Manage Event Definitions
+commands:
+  - name: list
+    description: Retrieve Event Definitions.
+    method: GET
+    path: service/dtm/definitions/events
+    descriptionLong: |
+      Retrieves all Event Definitions registered in your tenant.
+
+      The query parameter supports a flexible syntax for filtering and ordering results.
+    queryParameters:
+      - name: query
+        type: string
+        description: Use the $filter keyword to specify filtering criteria.
+        required: false
+      - name: identifiers
+        type: string[]
+        description: Comma-separated list of Event Definition identifiers to filter by.
+        required: false
+      - name: titles
+        type: string[]
+        description: Comma-separated list of Event Definition titles to filter by.
+        required: false
+      - name: tags
+        type: string[]
+        description: Comma-separated list of tags to filter by.
+        required: false
+      - name: currentPage
+        type: integer
+        description: currentPage query parameter
+        required: false
+      - name: pageSize
+        type: integer
+        description: pageSize query parameter
+        required: false
+  - name: create
+    description: Create a new Event Definition.
+    method: POST
+    path: service/dtm/definitions/events
+    descriptionLong: |
+      Creates a new Event Definition.
+
+      An Event Definition requires a unique identifier and a JSON Schema (Draft-7) describing
+      the event structure. An optional title can be provided.
+  - name: update
+    description: Update an existing Event Definition.
+    method: PUT
+    path: service/dtm/definitions/events
+    descriptionLong: |
+      Updates an existing Event Definition identified by the identifier in the request body.
+
+      The JSON schema, title, and description of the definition can be updated.
