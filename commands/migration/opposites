@@ -12,6 +12,11 @@ source "$(dirname "$0")/../../shared/constants"
 # Stop on unexpected errors. Ensure that pipelines return the correct exit code.
 set -eo pipefail
 
+# Location of the shared jq programs and jsonnet templates
+SHARED_DIR="$(cd "$(dirname "$0")/../../shared" && pwd)"
+JQ_DIR="$SHARED_DIR/opposites/jq"
+JSONNET_DIR="$SHARED_DIR/opposites/jsonnet"
+
 # Help text
 help() {
     cat <<EOF
@@ -23,6 +28,7 @@ Usage:
 Description:
     Creates or removes opposite references for all Assets that have the c8y_LinkedSeries fragment. 
     In create mode, for each linked series an opposite reference will be created as ChildAddition of the linked device.
+    Create then verifies what it created and fails if any linked series is missing its opposite reference.
     In clear mode, all opposite references will be removed.
     In verify mode, opposite references are checked without changing them.
     In get mode, all opposite references are retrieved and displayed.
@@ -31,10 +37,17 @@ Flags:
     -h, --help             Show this help message
     --id                   Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
     --includeParentDevice  Include parent device details in get mode output. Only used for get mode.
-    --outputFile FILE      Write output to FILE only if non-empty. Empty files are not created. Only used for get/verify mode.
+    --outputFile FILE      Write output to FILE only if non-empty. Empty files are not created.
+                           Only used for create/get/verify mode. For create it receives the
+                           result of the verification that runs after the references are created.
+    --stats                Print detailed statistics after verification (assets, links, devices,
+                           reverse index entries, error breakdown). Only used for create/verify mode.
+    --traceDir DIR         Write all intermediate verification data to DIR for troubleshooting.
+                           Only used for create/verify mode.
 
 Examples:
     c8y dtm migration opposites create
+    c8y dtm migration opposites create --stats --traceDir ./trace
     c8y dtm migration opposites clear
     c8y dtm migration opposites verify
     c8y dtm migration opposites verify --id "12345"
@@ -42,6 +55,9 @@ Examples:
     c8y dtm migration opposites get
     c8y dtm migration opposites get --includeParentDevice
     c8y dtm migration opposites get --outputFile "output.json"
+    c8y dtm migration opposites verify --stats
+    c8y dtm migration opposites verify --traceDir ./trace
+    c8y dtm migration opposites verify --stats --outputFile "verification_result.json" --traceDir ./trace
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -70,9 +86,17 @@ checkModeIsSet() {
 }
 
 checkAllowedSingleIdUsage() {
-    if [ -n "$SINGLE_ID" ] && [ "$MODE" = "verify" ]; then
-        info "Single ID '$SINGLE_ID' query."
+    if [ -z "$SINGLE_ID" ]; then
+        return 0
     fi
+    if [ "$MODE" != "verify" ]; then
+        # Narrowing 'create' to a single asset would create opposite references for a
+        # part of the tenant only, and the guard against existing child additions would
+        # then block any later full run.
+        error "Bad args:" "--id can only be used with 'verify' mode."
+        exit 1
+    fi
+    info "Single asset mode enabled. Only the asset with id/name '$SINGLE_ID' will be verified."
 }
 
 checkGetFlagUsage() {
@@ -80,8 +104,16 @@ checkGetFlagUsage() {
         error "Bad args:" "--includeParentDevice can only be used with 'get' mode."
         exit 1
     fi
-    if [ -n "$SAFE_OUTPUT_FILE" ] && [ "$MODE" != "get" ] && [ "$MODE" != "verify" ]; then
-        error "Bad args:" "--outputFile can only be used with 'get' or 'verify' mode."
+    if [ -n "$SAFE_OUTPUT_FILE" ] && [ "$MODE" != "get" ] && [ "$MODE" != "verify" ] && [ "$MODE" != "create" ]; then
+        error "Bad args:" "--outputFile can only be used with 'create', 'get' or 'verify' mode."
+        exit 1
+    fi
+    if [ -n "$TRACE_DIR" ] && [ "$MODE" != "verify" ] && [ "$MODE" != "create" ]; then
+        error "Bad args:" "--traceDir can only be used with 'create' or 'verify' mode."
+        exit 1
+    fi
+    if [ "$SHOW_STATS" = "true" ] && [ "$MODE" != "verify" ] && [ "$MODE" != "create" ]; then
+        error "Bad args:" "--stats can only be used with 'create' or 'verify' mode."
         exit 1
     fi
 }
@@ -89,6 +121,8 @@ checkGetFlagUsage() {
 SINGLE_ID=""
 INCLUDE_PARENT_DEVICE="false"
 SAFE_OUTPUT_FILE=""
+TRACE_DIR=""
+SHOW_STATS="false"
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -106,7 +140,6 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             SINGLE_ID="$2"
-            info "Single asset mode enabled. Will only process asset with id/name '$SINGLE_ID'."
             shift
             ;;
         --includeParentDevice)
@@ -122,6 +155,21 @@ while [ $# -gt 0 ]; do
                 exit 1
             fi
             SAFE_OUTPUT_FILE="$2"
+            shift
+            ;;
+        --stats)
+            SHOW_STATS="true"
+            ;;
+        --traceDir)
+            if [ -n "$TRACE_DIR" ]; then
+                error "Bad args:" "Cannot specify --traceDir more than once. Already set to '$TRACE_DIR'."
+                exit 1
+            fi
+            if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+                error "Bad args:" "--traceDir requires a DIR argument."
+                exit 1
+            fi
+            TRACE_DIR="$2"
             shift
             ;;
         create)
@@ -163,6 +211,34 @@ validate_positional_args "$@"
 
 check_prerequisites
 
+if [ ! -d "$JQ_DIR" ] || [ ! -d "$JSONNET_DIR" ]; then
+    error "Incomplete installation." "Expected the shared jq programs in '$JQ_DIR' and the jsonnet templates in '$JSONNET_DIR'."
+    exit 1
+fi
+
+# Maximum number of individual error lines printed to the console. The full list is
+# always available via --outputFile / --traceDir.
+MAX_ERROR_LINES="${C8Y_DTM_MAX_ERROR_LINES:-50}"
+
+if [ -n "$TRACE_DIR" ]; then
+    mkdir -p "$TRACE_DIR"
+    info "Trace enabled. Intermediate data will be written to '$TRACE_DIR'."
+fi
+
+# Write intermediate data to the trace directory when --traceDir is set.
+# Usage: trace_write <file-name> <content>
+trace_write() {
+    [ -n "$TRACE_DIR" ] || return 0
+    local file="$TRACE_DIR/$1"
+    local content="$2"
+    if [ -z "$content" ]; then
+        : > "$file"
+    else
+        printf '%s\n' "$content" > "$file"
+    fi
+    info "Trace: $file ($(count_lines "$content") lines)"
+}
+
 if [ -n "$SINGLE_ID" ]; then
     export FILTER_QUERY="(id eq '$SINGLE_ID' or name eq '$SINGLE_ID') and has(${LINKED_SERIES_FRAGMENT})"
 else
@@ -186,14 +262,186 @@ load_assets_with_linked_series() {
 
 explode_assets_with_linked_series() {
     explodedSeries=$(
-      echo "$assets_with_linked_series" | jq -c '
-          . as $parent | 
-          .c8y_LinkedSeries[] as $item | 
-          select($item.source.id != null) | 
-          $parent | 
-          .c8y_LinkedSeries = $item'
+      echo "$assets_with_linked_series" | jq -c -f "$JQ_DIR/explode-linked-series.jq"
     )
     echo "$explodedSeries"
+}
+
+# Computes verification statistics as a single JSON object.
+# Usage: build_verification_statistics <links-file> <devices-file> <result-file> <asset-count>
+build_verification_statistics() {
+    jq -n \
+        --argjson assetCount "$4" \
+        --slurpfile links "$1" \
+        --slurpfile devices "$2" \
+        --slurpfile result "$3" \
+        -f "$JQ_DIR/verification-statistics.jq"
+}
+
+# Renders the statistics JSON as an aligned text block on stderr.
+# Usage: render_verification_statistics <statistics-json>
+render_verification_statistics() {
+    printf '%s\n' "$1" | jq -r -f "$JQ_DIR/render-statistics.jq" >&2
+}
+
+# Verifies that every (asset, linked series) pair has a matching entry in the
+# c8y_LinkedSeriesReverseIndex child addition of its source device.
+#
+# Each source device is queried only once, but ALL links pointing to it are checked
+# against the child addition that is returned. A link is identified by the asset side
+# of the stored entry (asset.id + asset.fragment + asset.series), because that is its
+# only unique identity. The source fragment/series alone is ambiguous: many assets and
+# series can share the same source fragment and series on one device.
+run_verification() {
+    info "Running verification..."
+
+    assets_with_linked_series=$(load_assets_with_linked_series) || return 0
+    trace_write "verify-assets.json" "$assets_with_linked_series"
+
+    # One record per (asset, linked series) pair. "id" is the source device id.
+    explodedSeries=$(
+      explode_assets_with_linked_series \
+        | jq -c -f "$JQ_DIR/link-records.jq"
+    )
+
+    if is_empty_result_set "$explodedSeries"; then
+        info "No linked series with a source device found. Nothing to verify."
+        return 0
+    fi
+
+    total_collected=$(count_lines "$explodedSeries")
+    info "Found $total_collected links to verify."
+    trace_write "verify-explodedSeries.json" "$explodedSeries"
+
+    # Query each source device only once. The links themselves are not piped to c8y,
+    # they are matched locally afterwards.
+    uniqueDevices=$(echo "$explodedSeries" | jq -cs 'map({id: .id}) | unique | .[]')
+    unique_count=$(count_lines "$uniqueDevices")
+    trace_write "verify-uniqueDevices.json" "$uniqueDevices"
+
+    info "Found $unique_count unique source devices. Verifying all $total_collected links against them..."
+
+
+    local work_dir
+    work_dir=$(mktemp -d)
+    # shellcheck disable=SC2064 # expand work_dir now, not when the trap runs
+    trap "rm -rf '$work_dir'" RETURN
+
+    # Temporarily disable exit on error to allow processing to continue
+    set +e
+    childAdditionsByDevice=$(
+      echo "$uniqueDevices" |
+      c8y inventory children list \
+          --childType addition \
+          --withError \
+          --abortOnErrors "$ABORT_ON_ERRORS" \
+          --query "type eq c8y_LinkedSeriesReverseIndex" \
+          --raw \
+          --outputTemplate "$JSONNET_DIR/verify-child-addition.jsonnet" \
+          "${C8Y_FLAGS[@]}" 2>"$work_dir/c8y-stderr.log"
+    )
+    list_exit_code=$?
+    set -e
+
+    trace_write "verify-childAdditions.json" "$childAdditionsByDevice"
+    if [ -n "$TRACE_DIR" ]; then
+        cp "$work_dir/c8y-stderr.log" "$TRACE_DIR/verify-c8y-stderr.log"
+        info "Trace: $TRACE_DIR/verify-c8y-stderr.log"
+    fi
+
+    local response_count
+    response_count=$(count_lines "$childAdditionsByDevice")
+
+    if [ "$list_exit_code" -ne 0 ] && [ "$response_count" -eq 0 ]; then
+        error "Verification failed." "Failed to load child additions (command failed or was aborted)."
+        if [ -s "$work_dir/c8y-stderr.log" ]; then
+            tail -n 20 "$work_dir/c8y-stderr.log" >&2
+        fi
+        return 1
+    fi
+
+    if [ "$response_count" -ne "$unique_count" ]; then
+        warn "Incomplete verification data. Queried $unique_count devices but received $response_count records." \
+             "$((unique_count - response_count)) device(s) returned nothing (aborted request or output template error). Those links are reported as NoVerificationResultError."
+        if [ -s "$work_dir/c8y-stderr.log" ]; then
+            tail -n 10 "$work_dir/c8y-stderr.log" >&2
+        fi
+    fi
+
+    # Match every single link against the c8y_LinkedAssets of its source device.
+    printf '%s\n' "$explodedSeries" > "$work_dir/links.json"
+    printf '%s\n' "$childAdditionsByDevice" > "$work_dir/devices.json"
+
+    result=$(
+      jq -c -n \
+        --slurpfile devices "$work_dir/devices.json" \
+        --slurpfile links "$work_dir/links.json" \
+        -f "$JQ_DIR/verify-match-links.jq"
+    )
+
+    printf '%s\n' "$result" > "$work_dir/result.json"
+    trace_write "verify-result.json" "$result"
+
+    error_items=$(echo "$result" | jq -c 'select(.error != null)')
+    trace_write "verify-errors.json" "$error_items"
+
+    # The statistics object is the single source of truth for all verification counts,
+    # both for the verdict below and for the optional --stats output.
+    local statistics devices_with_errors links_checked links_failed
+    statistics=$(build_verification_statistics \
+        "$work_dir/links.json" "$work_dir/devices.json" "$work_dir/result.json" \
+        "$(count_lines "$assets_with_linked_series")")
+    trace_write "verify-statistics.json" "$statistics"
+
+    IFS=$'\t' read -r links_checked links_failed devices_with_errors < <(
+        printf '%s\n' "$statistics" \
+          | jq -r '[.links.verified, (.links.missing + .links.unverifiable), .devices.withErrors] | @tsv'
+    )
+
+    if [ -n "$SAFE_OUTPUT_FILE" ] || has_flag "--output" || has_flag "-o" || has_flag "--outputFileRaw" || has_flag "--raw"; then
+        if [ -n "$SAFE_OUTPUT_FILE" ]; then
+            resultCount=$(count_lines "$result")
+            if [ "$resultCount" -gt 0 ]; then
+                echo "$result" | c8y util show "${C8Y_FLAGS[@]}" > "$SAFE_OUTPUT_FILE"
+            fi
+        else
+            # Output to stdout
+            echo "$result" | c8y util show "${C8Y_FLAGS[@]}"
+        fi
+    fi
+
+    local printed=0
+    while IFS=$'\t' read -r err_type err_msg; do
+        if [ -z "$err_type" ]; then continue; fi
+        if [ "$printed" -ge "$MAX_ERROR_LINES" ]; then
+            printed=$((printed+1))
+            continue
+        fi
+        printed=$((printed+1))
+        error "$err_type" "$err_msg"
+    done < <(echo "$error_items" | jq -r -s -f "$JQ_DIR/verification-error-messages.jq")
+
+    if [ "$printed" -gt "$MAX_ERROR_LINES" ]; then
+        warn "$((printed - MAX_ERROR_LINES)) further error lines suppressed." \
+             "Use --outputFile or --traceDir to get the complete list, or raise C8Y_DTM_MAX_ERROR_LINES."
+    fi
+
+    if [ "$SHOW_STATS" = "true" ]; then
+        render_verification_statistics "$statistics"
+    fi
+
+    if [ "$((links_checked + links_failed))" -ne "$total_collected" ]; then
+        warn "Link accounting mismatch." "$total_collected links found, but $links_checked verified and $links_failed reported as failing."
+    fi
+
+    if [ "$devices_with_errors" -gt 0 ]; then
+        message="Verification of $(count_lines "$assets_with_linked_series") assets with $total_collected linked series linked to $unique_count devices found $links_failed failing links on $devices_with_errors devices."
+        error "Verification errors." "$message"
+        return 1
+    fi
+
+    success "Verification completed successfully." "All $links_checked linked series of $(count_lines "$assets_with_linked_series") assets on $unique_count devices have opposite references."
+    return 0
 }
 
 if [ "$MODE" = "create" ]; then
@@ -215,24 +463,10 @@ if [ "$MODE" = "create" ]; then
 
     childAdditions=$(
       printf '%s' "$explodedSeries" \
-        | jq -c -s '
-            map({
-                source_id: .c8y_LinkedSeries.source.id,
-                linked_asset: (
-                    . as $parent |
-                    {
-                        asset: ($parent.c8y_LinkedSeries | del(.source) + {id: $parent.id})
-                    } + ($parent.c8y_LinkedSeries.source | del(.id))
-                )
-            }) |
-            group_by(.source_id) |
-            map({
-                id: .[0].source_id,
-                c8y_LinkedAssets: map(.linked_asset)
-            }) | 
-            .[]
-          '
+        | jq -c -s -f "$JQ_DIR/build-child-additions.jq"
     )
+
+    trace_write "create-childAdditions.json" "$childAdditions"
 
     # Source devices might not exist, filter non-existing devices by checking before creating child additions
     # to avoid creating child additions with missing source references. This would happen, as 
@@ -241,6 +475,8 @@ if [ "$MODE" = "create" ]; then
     filteredList=$(
       echo "$childAdditions" | c8y inventory assert exists --attempts 1 --workers 20
     )
+
+    trace_write "create-filteredList.json" "$filteredList"
 
     missing_count=$(($(count_lines "$childAdditions") - $(count_lines "$filteredList")))
     existing_count=$(count_lines "$filteredList")
@@ -253,147 +489,18 @@ if [ "$MODE" = "create" ]; then
         --template '{ c8y_LinkedAssets: input.value.c8y_LinkedAssets, type: "c8y_LinkedSeriesReverseIndex" }' \
         "${C8Y_FLAGS[@]}"
 
-    # to use the opposite endpoint, 
-    # echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s${missingSourceOption}" "${C8Y_FLAGS[@]}"
+    # Alternative: let the platform create the references via the opposite endpoint
+    # echo "$explodedSeries" | jq -r '"/assets/" + .id + "/linkedSeries/" + .c8y_LinkedSeries.fragment + "/" + .c8y_LinkedSeries.series + "/opposite"' | c8y api --method PUT --url "%s" "${C8Y_FLAGS[@]}"
 
-elif [ "$MODE" = "verify" ]; then
-    info "Running verification..."
-    assets_with_linked_series=$(load_assets_with_linked_series) || exit 0
-
-    # Get only the data we need for the next steps, and simplify the structure for easier processing
-    explodedSeries=$(
-      explode_assets_with_linked_series \
-        | jq -c '{ 
-              "c8y_LinkedSeries": .c8y_LinkedSeries, 
-              "assetId": .id, 
-              "id": .c8y_LinkedSeries.source.id 
-          }'
-    )
-    total_collected=$(count_lines "$explodedSeries")
-    info "Found $total_collected links to verify."
-
-    # Deduplicate by device ID - only query each unique device once
-    uniqueDevices=$(echo "$explodedSeries" | jq -cs 'unique_by(.id) | .[]')
-    unique_count=$(count_lines "$uniqueDevices")
-    
-    info "Found $unique_count unique source devices. Verifying each once..."
-
-    output_template='
-      local hasValue(obj, field) = std.isObject(obj) && std.objectHas(obj, field) && obj[field] != null && std.toString(obj[field]) != "";
-      local refsFromOutput(obj) =
-          if std.isObject(obj) && std.objectHas(obj, "references") && std.isArray(obj.references) then
-              obj.references
-          else if std.isObject(obj) && std.objectHas(obj, "managedObjects") && std.isArray(obj.managedObjects) then
-              std.map(function(mo) { managedObject: mo }, obj.managedObjects)
-          else
-              null;
-      if hasValue(output, "errorType") then
-          input.value + { "c8yError": output}
-              else if refsFromOutput(output) == null then
-          input.value + { "error": "NoReferencesFieldError"}
-              else if std.length(refsFromOutput(output)) == 0 then
-          input.value + { "error": "NoChildAdditionsError"}
-              else if std.length(refsFromOutput(output)) > 1 then
-          input.value + { "error": "TooManyChildAdditionsError"}
-      else
-          local references = refsFromOutput(output);
-          local managedObject = references[0].managedObject;
-          if !std.isObject(managedObject) then
-              input.value + { "error": "ManagedObjectNotObjectError"}
-          else if !hasValue(managedObject, "c8y_LinkedAssets") then
-              input.value + { "error": "MissingLinkedAssetsInChildAdditionError"}
-          else if !std.isArray(managedObject.c8y_LinkedAssets) || std.length(managedObject.c8y_LinkedAssets) == 0 then
-              input.value + { "error": "LinkedAssetsNotArrayOrEmptyError"}
-          else
-              local linkedAssets = managedObject.c8y_LinkedAssets;
-              local common = {"childAdditionId": managedObject.id, "type": managedObject.type};
-              local result = input.value + common + { "linkedAssets": linkedAssets };
-              local source = result.c8y_LinkedSeries.source;
-              local matches = std.filter(
-                  function(item)
-                      std.isObject(item) && item.fragment == source.fragment && item.series == source.series,
-                  linkedAssets
-              );
-              if std.length(matches) > 0 then
-                  result + { "verification": "success" }
-              else
-                  result + { "error": "MissingLinkedSeriesInChildAdditionError" }
-    '
-    
-    # Temporarily disable exit on error to allow processing to continue
-    set +e
-    result=$(
-      echo "$uniqueDevices" |
-      c8y inventory children list \
-          --childType addition \
-          --withError \
-          --abortOnErrors "$ABORT_ON_ERRORS" \
-          --query "type eq c8y_LinkedSeriesReverseIndex" \
-          --raw \
-          --outputTemplate "$output_template" \
-          "${C8Y_FLAGS[@]}" 2>/dev/null
-    )
-    list_exit_code=$?
-    set -e
-    
-    error_count=0
-    error_items=$(echo "$result" | jq -c 'select(.error != null or .c8yError != null)')
-
-    if [ "$list_exit_code" -ne 0 ] && [ -z "$error_items" ] ; then
-        error "Verification failed." "Failed to load child additions (command failed or was aborted)."
-        exit 1
-    fi
-
-   if [ -n "$SAFE_OUTPUT_FILE" ] || has_flag "--output" || has_flag "-o" || has_flag "--outputFileRaw" || has_flag "--raw"; then
-        if [ -n "$SAFE_OUTPUT_FILE" ]; then
-            resultCount=$(count_lines "$result")
-            if [ "$resultCount" -gt 0 ]; then
-                echo "$result" | c8y util show "${C8Y_FLAGS[@]}" > "$SAFE_OUTPUT_FILE"
-            fi
-        else
-            # Output to stdout
-            echo "$result" | c8y util show "${C8Y_FLAGS[@]}"
-        fi
-    fi
-
-    while read -r id error error_msg; do
-        if [ -z "$id" ]; then continue; fi
-        if ! [ -z "$error" ]; then
-            error_count=$((error_count+1))
-        else 
-            continue
-        fi
-        error "$id $error" "$error_msg"
-    done < <(echo "$error_items" | jq -r -s 'sort_by(.assetId) | .[] |
-        if .c8yError != null then
-            "CumulocityError - " + .c8yError.message + " (asset " + (.assetId|tostring) + ", " + (.c8y_LinkedSeries.fragment|tostring) +"." + (.c8y_LinkedSeries.series|tostring) + ")"
-        elif .error == "NoChildAdditionsError" then
-            "NoChildAdditionsError - device " + (.id|tostring) + " has no child additions (asset " + (.assetId|tostring) + ")"
-        elif .error == "TooManyChildAdditionsError" then
-            "TooManyChildAdditionsError - device " + (.id|tostring) + " has more than one child addition (asset " + (.assetId|tostring) + ")"
-        elif .error == "ManagedObjectNotObjectError" then
-            "ManagedObjectNotObjectError - device " + (.id|tostring) + " managedObject is not an object (asset " + (.assetId|tostring) + ")"
-        elif .error == "MissingLinkedAssetsInChildAdditionError" then
-            "MissingLinkedAssetsInChildAdditionError - device " + (.id|tostring) + " child addition " + (.childAdditionId|tostring) + " has no c8y_LinkedAssets fragment or it is empty"
-        elif .error == "LinkedAssetsNotArrayOrEmptyError" then
-            "LinkedAssetsNotArrayOrEmptyError - device " + (.id|tostring) + " child addition " + (.childAdditionId|tostring) + " c8y_LinkedAssets is not an array or is empty"
-        elif .error == "MissingLinkedSeriesInChildAdditionError" then
-            "MissingLinkedSeriesInChildAdditionError - device " + (.id|tostring) + " linked series not found in child addition " + (.childAdditionId|tostring) + " c8y_LinkedAssets"
-        elif .error != null then
-            (.id|tostring) + " - " + (.error|tostring)
-        else
-            null
-        end
-    ')
-  
-    if [ "$error_count" -gt 0 ]; then
-        message="Verification of $(count_lines "$assets_with_linked_series") assets with ${total_collected} linked series linked to $(count_lines "$uniqueDevices") devices found $error_count errors."
-        error "Verification errors." "$message"
-        exit 1
-    else
-        success "Verification completed successfully." "All ${total_collected} linked series have opposite references."
+    if run_verification; then
         exit 0
     fi
+    exit 1
+elif [ "$MODE" = "verify" ]; then
+    if run_verification; then
+        exit 0
+    fi
+    exit 1
 elif [ "$MODE" = "clear" ]; then
     info "Clearing opposite references..."
     c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"

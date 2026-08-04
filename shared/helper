@@ -236,8 +236,6 @@ load_all_assets() {
         page_result=$(c8y "${c8y_args[@]}" 2>/dev/null)
     fi
 
-    warn "Loaded $(count_lines "$page_result") assets from inventory"
-
     echo -n "$page_result"
 }
 
