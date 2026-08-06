@@ -43,10 +43,14 @@ def idList(ids): (ids | length) as $n
       "UNKNOWN: unexpected response shape, see verify-errors.json." ]
 } as $causeHelp
 | [ "Verification statistics",
-  "  Assets",
-  row("with c8y_LinkedSeries"; .assets.withLinkedSeries),
-  row("with a source-linked series"; .assets.withSourceLinkedSeries),
-  row("links per asset (min/avg/max)"; range3(.assets.linksPerAssetMin; .assets.linksPerAssetAvg; .assets.linksPerAssetMax)),
+  "  Assets and their linked series",
+  row("assets loaded"; .assets.loaded),
+  row("... with a sourced linked series"; .assets.withSourceLinkedSeries),
+  row("... that also have unsourced series"; .assets.withUnsourcedLinkedSeries),
+  row("linked series defined on them"; .assets.linkedSeriesDefined),
+  row("... with a source, verified below"; .assets.linkedSeriesWithSource),
+  row("... without a source, nothing to verify"; .assets.linkedSeriesWithoutSource),
+  row("sourced series per asset (min/avg/max)"; range3(.assets.linksPerAssetMin; .assets.linksPerAssetAvg; .assets.linksPerAssetMax)),
   "  Links (asset series to device series)",
   row("total"; .links.total),
   row("verified"; (.links.verified | tostring) + " (" + (.links.verifiedPct | tostring) + "%)"),

@@ -1,17 +1,25 @@
 # Computes the verification statistics as a single JSON object.
-# Inputs: --argjson assetCount  number of assets with a c8y_LinkedSeries fragment
+# Inputs: --slurpfile assets    the assets as loaded from the inventory
 #         --slurpfile links     link records (see link-records.jq)
 #         --slurpfile devices   records from verify-child-addition.jsonnet
 #         --slurpfile result    verdicts from verify-match-links.jq
 # Output: one object with the assets, links, devices, reverseIndex, sourceSeries,
 #         missingLinks, unverifiable and errorsByType sections.
-# Invariant: links.verified + links.missing + links.unverifiable == links.total
+# Invariants: links.verified + links.missing + links.unverifiable == links.total
+#             assets.linkedSeriesWithSource + assets.linkedSeriesWithoutSource
+#                 == assets.linkedSeriesDefined
+# A linked series without a source cannot have an opposite reference, so it is not a
+# link and never verified. It is counted so that the totals reconcile: without it the
+# output silently presents the sourced series as the whole population.
 def pct(a; b): if (b | not) or b == 0 then 0 else ((a / b) * 1000 | round) / 10 end;
 def avg1: if length == 0 then 0 else ((add / length) * 10 | round) / 10 end;
 def liveKey: (.assetId // "" | tostring) + "|" + (.c8y_LinkedSeries.fragment // "" | tostring) + "|" + (.c8y_LinkedSeries.series // "" | tostring);
 def entryKey: (.asset.id // "" | tostring) + "|" + (.asset.fragment // "" | tostring) + "|" + (.asset.series // "" | tostring);
 def srcKey: (.c8y_LinkedSeries.source.fragment // "" | tostring) + "|" + (.c8y_LinkedSeries.source.series // "" | tostring);
 def entrySrcKey: (.fragment // "" | tostring) + "|" + (.series // "" | tostring);
+# The c8y_LinkedSeries entries of one asset, and whether an entry carries a source.
+def seriesOf: if (.c8y_LinkedSeries | type) == "array" then .c8y_LinkedSeries else [] end;
+def unsourced: select((type != "object") or ((.source | type) != "object") or (.source.id == null));
 def verifiedLinks: map(if .error == null then (.linkCount // 0)
                        elif .error == "MissingLinkedSeriesInChildAdditionError" then ((.linkCount // 0) - (.missingCount // 0))
                        else 0 end) | add // 0;
@@ -35,8 +43,12 @@ def verifiedLinks: map(if .error == null then (.linkCount // 0)
 | ($deviceLevelErrors | map(.linkCount // 0) | add // 0) as $unverifiable
 | {
     assets: {
-      withLinkedSeries: $assetCount,
+      loaded: ($assets | length),
       withSourceLinkedSeries: ($links | map(.assetId) | unique | length),
+      withUnsourcedLinkedSeries: ([$assets[] | select([seriesOf[] | unsourced] | length > 0)] | length),
+      linkedSeriesDefined: ([$assets[] | seriesOf | length] | add // 0),
+      linkedSeriesWithSource: ($links | length),
+      linkedSeriesWithoutSource: ([$assets[] | seriesOf[] | unsourced] | length),
       linksPerAssetMin: ($linksPerAsset | min // 0),
       linksPerAssetAvg: ($linksPerAsset | avg1),
       linksPerAssetMax: ($linksPerAsset | max // 0)

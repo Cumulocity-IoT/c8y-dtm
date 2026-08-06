@@ -268,13 +268,13 @@ explode_assets_with_linked_series() {
 }
 
 # Computes verification statistics as a single JSON object.
-# Usage: build_verification_statistics <links-file> <devices-file> <result-file> <asset-count>
+# Usage: build_verification_statistics <assets-file> <links-file> <devices-file> <result-file>
 build_verification_statistics() {
     jq -n \
-        --argjson assetCount "$4" \
-        --slurpfile links "$1" \
-        --slurpfile devices "$2" \
-        --slurpfile result "$3" \
+        --slurpfile assets "$1" \
+        --slurpfile links "$2" \
+        --slurpfile devices "$3" \
+        --slurpfile result "$4" \
         -f "$JQ_DIR/verification-statistics.jq"
 }
 
@@ -369,6 +369,7 @@ run_verification() {
     fi
 
     # Match every single link against the c8y_LinkedAssets of its source device.
+    printf '%s\n' "$assets_with_linked_series" > "$work_dir/assets.json"
     printf '%s\n' "$explodedSeries" > "$work_dir/links.json"
     printf '%s\n' "$childAdditionsByDevice" > "$work_dir/devices.json"
 
@@ -387,16 +388,23 @@ run_verification() {
 
     # The statistics object is the single source of truth for all verification counts,
     # both for the verdict below and for the optional --stats output.
-    local statistics devices_with_errors links_checked links_failed
+    local statistics devices_with_errors links_checked links_failed series_reconcile
     statistics=$(build_verification_statistics \
-        "$work_dir/links.json" "$work_dir/devices.json" "$work_dir/result.json" \
-        "$(count_lines "$assets_with_linked_series")")
+        "$work_dir/assets.json" "$work_dir/links.json" \
+        "$work_dir/devices.json" "$work_dir/result.json")
     trace_write "verify-statistics.json" "$statistics"
 
-    IFS=$'\t' read -r links_checked links_failed devices_with_errors < <(
+    IFS=$'\t' read -r links_checked links_failed devices_with_errors series_reconcile < <(
         printf '%s\n' "$statistics" \
-          | jq -r '[.links.verified, (.links.missing + .links.unverifiable), .devices.withErrors] | @tsv'
+          | jq -r '[.links.verified,
+                    (.links.missing + .links.unverifiable),
+                    .devices.withErrors,
+                    (.assets.linkedSeriesWithSource + .assets.linkedSeriesWithoutSource == .assets.linkedSeriesDefined)] | @tsv'
     )
+
+    if [ "$series_reconcile" != "true" ]; then
+        warn "Linked series accounting mismatch." "The sourced and unsourced linked series do not add up to the number defined on the assets. Statistics are unreliable, see verify-statistics.json."
+    fi
 
     if [ -n "$SAFE_OUTPUT_FILE" ] || has_flag "--output" || has_flag "-o" || has_flag "--outputFileRaw" || has_flag "--raw"; then
         if [ -n "$SAFE_OUTPUT_FILE" ]; then
