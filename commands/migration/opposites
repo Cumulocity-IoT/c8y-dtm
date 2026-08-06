@@ -267,6 +267,10 @@ explode_assets_with_linked_series() {
     echo "$explodedSeries"
 }
 
+plural_devices() {
+    if [ "$1" = "1" ]; then echo "device"; else echo "devices"; fi
+}
+
 # Computes verification statistics as a single JSON object.
 # Usage: build_verification_statistics <assets-file> <links-file> <devices-file> <result-file>
 build_verification_statistics() {
@@ -389,18 +393,21 @@ run_verification() {
     # The statistics object is the single source of truth for all verification counts,
     # both for the verdict below and for the optional --stats output.
     local statistics devices_with_errors links_checked links_failed series_reconcile
+    local links_missing links_unverifiable
     statistics=$(build_verification_statistics \
         "$work_dir/assets.json" "$work_dir/links.json" \
         "$work_dir/devices.json" "$work_dir/result.json")
     trace_write "verify-statistics.json" "$statistics"
 
-    IFS=$'\t' read -r links_checked links_failed devices_with_errors series_reconcile < <(
+    IFS=$'\t' read -r links_checked links_missing links_unverifiable devices_with_errors series_reconcile < <(
         printf '%s\n' "$statistics" \
           | jq -r '[.links.verified,
-                    (.links.missing + .links.unverifiable),
+                    .links.missing,
+                    .links.unverifiable,
                     .devices.withErrors,
                     (.assets.linkedSeriesWithSource + .assets.linkedSeriesWithoutSource == .assets.linkedSeriesDefined)] | @tsv'
     )
+    links_failed=$((links_missing + links_unverifiable))
 
     if [ "$series_reconcile" != "true" ]; then
         warn "Linked series accounting mismatch." "The sourced and unsourced linked series do not add up to the number defined on the assets. Statistics are unreliable, see verify-statistics.json."
@@ -443,12 +450,13 @@ run_verification() {
     fi
 
     if [ "$devices_with_errors" -gt 0 ]; then
-        message="Verification of $(count_lines "$assets_with_linked_series") assets with $total_collected linked series linked to $unique_count devices found $links_failed failing links on $devices_with_errors devices."
+        message="Checked $total_collected sourced linked series of $(count_lines "$assets_with_linked_series") assets on $unique_count devices:"
+        message="$message $links_missing missing and $links_unverifiable unverifiable, on $devices_with_errors $(plural_devices "$devices_with_errors")."
         error "Verification errors." "$message"
         return 1
     fi
 
-    success "Verification completed successfully." "All $links_checked linked series of $(count_lines "$assets_with_linked_series") assets on $unique_count devices have opposite references."
+    success "Verification completed successfully." "All $links_checked sourced linked series of $(count_lines "$assets_with_linked_series") assets on $unique_count devices have opposite references."
     return 0
 }
 
