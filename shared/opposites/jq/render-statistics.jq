@@ -100,4 +100,36 @@ def idList(ids): (ids | length) as $n
 + (if (.errorsByType | length) == 0 then [ "  Errors by type", "    none" ]
    else [ "  Errors by type" ] + (.errorsByType | to_entries | map(row(.key; plural(.value.devices; "device") + " / " + plural(.value.links; "link"))))
    end)
+# Only present when verify ran with --measurementGaps.
++ (if .measurementGaps == null then []
+   else [ "  Measurement gaps (device measurements that never reached the asset)",
+          row("missing links looked at"; .measurementGaps.links),
+          row("probed"; .measurementGaps.probed),
+          row("not probed (link limit reached)"; .measurementGaps.skipped),
+          row("with a gap"; .measurementGaps.withGaps),
+          row("without a gap"; .measurementGaps.withoutGaps),
+          row("undetermined (probe or query failed)"; .measurementGaps.failed),
+          row("capped by the point limit"; .measurementGaps.truncated),
+          row("distinct assets affected"; .measurementGaps.distinctAssets) ]
+        + (if .measurementGaps.approximate > 0 then
+             [ row("boundary-only estimate (--measurementGaps)"; .measurementGaps.approximate),
+               row("  ... of those, point count unknown"; .measurementGaps.unknownPointCountLinks) ]
+           else [] end)
+        + [ row("missing measurements in total (known counts only)"; .measurementGaps.totalMissingPoints),
+            row("most missing on a single link (known counts only)"; .measurementGaps.maxMissingPointsOnOneLink),
+            row("earliest gap starts at"; (.measurementGaps.earliestGapStart // "-")),
+            row("latest gap ends at"; (.measurementGaps.latestGapEnd // "-")) ]
+        + (.measurementGaps.byMethod | to_entries | map(row("  " + .key; plural(.value; "link"))))
+        + [ "        assetEmpty: the asset series never received anything, the whole",
+            "          extent of the device series is missing.",
+            "        timestampDiff: both sides hold data, the reported ranges are the",
+            "          timestamps present on the device and absent on the asset.",
+            "        Measurements outside the tenant retention are already deleted, so a",
+            "          reported range is an upper bound of what can still be recovered." ]
+        + (if .measurementGaps.approximate > 0 then
+             [ "        Boundary-only estimate: point counts are unknown, and a gap the asset",
+               "          series later recovered from is invisible. Rerun with",
+               "          --measurementGapsExact for exact data." ]
+           else [] end)
+   end)
 | .[]
