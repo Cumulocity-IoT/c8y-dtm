@@ -35,6 +35,48 @@ Description:
 
 Flags:
     -h, --help             Show this help message
+    --assetFragmentTemplate TPL
+                           Fragment the measurements are actually persisted under on the asset, as a
+                           template resolved against the c8y_LinkedSeries entry, e.g. '{sap_category_name}'.
+                           Defaults to '{fragment}', the declared value. Only used with --measurementGaps.
+                           Set this when a custom smart function does not persist under the fragment/series
+                           declared on the asset - querying the declared values would then always report a
+                           gap, whatever the link does.
+    --assetSeriesTemplate TPL
+                           Same for the series, e.g. '{sap_position_name}#{sap_characteristic_name}'.
+                           Defaults to '{series}'. Only used with --measurementGaps.
+    --dateFrom VALUE       Lower bound of every measurement query of the gap analysis. Absolute
+                           (2026-01-01T00:00:00.000Z) or relative (-2d, -12h, -30d). Default -2d.
+                           A gap is only ever reported within this window, so widen it to look further
+                           back and keep it small to keep the run cheap.
+    --dateTo VALUE         Upper bound of every measurement query of the gap analysis. Default: now.
+    --gapsFor SOURCE       Determine the measurement gap of the links named in SOURCE as well, whether or
+                           not they are missing from the reverse index right now. Implies
+                           --measurementGaps. Use this after the reverse index was repaired, to find out
+                           what the links that were reported broken never received.
+                           SOURCE is a file or a comma separated list of asset ids, and a file may hold:
+                             - a previous run's JSON, i.e. the verify-errors.json or verify-result.json
+                               of --traceDir, or the --outputFile output, in any shape (one object per
+                               line, pretty printed, or an array). This selects exactly the links
+                               reported broken there; verdicts that passed select nothing.
+                             - a pasted console log, of which the asset and device ids of each line are
+                               read (not the fragment.series, which cannot be split back apart safely,
+                               so the whole asset is selected)
+                             - plain asset ids, one per line
+                           Only the links to look at are taken from SOURCE. Their source device,
+                           fragment and series always come from the asset as it is right now.
+    --gapsForError TYPES   Which reported errors a --gapsFor source may select links from, comma
+                           separated, or 'all'. Default: every error except CumulocityError, which means
+                           the source device could not be read at all - there is no reverse index to
+                           repair, nothing to reprocess into, and a single such line can carry hundreds
+                           of links. Only used with --gapsFor.
+                           Example: --gapsForError MissingLinkedSeriesInChildAdditionError
+    --gapsOnly             Determine the measurement gaps of the --gapsFor links without verifying
+                           anything. Only the selected assets are read, one request each, and the
+                           reverse index of their devices is never queried, so this does not load the
+                           tenant. Needs --gapsFor and cannot narrow the load when a selector names only
+                           a device. Note that this says nothing about whether the reverse index is
+                           correct right now - run verify without it for that.
     --id                   Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
     --includeParentDevice  Include parent device details in get mode output. Only used for get mode.
     --measurementGaps      For every link reported as MissingLinkedSeriesInChildAdditionError, report the
@@ -52,9 +94,25 @@ Flags:
                            recovered from. Orders of magnitude more expensive: up to two full,
                            possibly paginated series reads per link, on top of the 4 boundary requests.
                            Implies --measurementGaps.
+    --missingMeasurementsFile FILE
+                           Download the device measurements behind the reported gaps and write them as
+                           ready-to-POST batches for the reprocess endpoint of dtm-data-service:
+                           FILE.0001.json, FILE.0002.json, ... each holding {"measurements":[...]}.
+                           Only used with --measurementGaps. Send them with:
+                             for f in FILE.*.json; do
+                               c8y api POST /service/dtm/reprocess/measurements --file "\$f" \\
+                                   --header "Content-Type: application/vnd.com.nsn.cumulocity.measurementcollection+json"
+                             done
+                           Requires ROLE_DIGITAL_TWIN_ADMIN. Repair the reverse index first, the
+                           reprocessed measurements are matched against it and land nowhere without it.
+    --noSupportedSeries    Do not use c8y_SupportedSeries to skip the boundary probes of series that
+                           never held a measurement. Only used with --measurementGaps.
     --outputFile FILE      Write output to FILE only if non-empty. Empty files are not created.
                            Only used for create/get/verify mode. For create it receives the
                            result of the verification that runs after the references are created.
+    --sanitizeTemplate     Replace [\\s.,*[]()@\$] with '_' in every value substituted into
+                           --assetFragmentTemplate/--assetSeriesTemplate, mirroring the sanitizeName()
+                           of the SAP smart function. Only used with --measurementGaps.
     --stats                Print detailed statistics after verification (assets, links, devices,
                            reverse index entries, error breakdown). Only used for create/verify mode.
     --traceDir DIR         Write all intermediate verification data to DIR for troubleshooting.
@@ -68,6 +126,21 @@ Environment:
     C8Y_DTM_GAPS_MAX_POINTS   Measurement timestamps read per series by --measurementGapsExact
                               (default 500000). Reaching it marks the link as truncated. Unused by
                               --measurementGaps, which never reads individual timestamps.
+    C8Y_DTM_REPROCESS_BATCH_SIZE
+                              Measurements per batch file of --missingMeasurementsFile (default 10000,
+                              the default maximum batch size of the reprocess endpoint)
+    C8Y_DTM_REPROCESS_MAX_MEASUREMENTS
+                              Measurements downloaded in total by --missingMeasurementsFile
+                              (default 100000). Reaching it stops the download and warns.
+    C8Y_DTM_GAPS_REQUEST_TIMEOUT
+                              Timeout of a single measurement request of --measurementGapsExact
+                              (default 60s). One page of a busy series can otherwise occupy the
+                              server for its full query budget, and --includeAll keeps asking for
+                              the next one. Together with C8Y_DTM_GAPS_MAX_POINTS this bounds how
+                              long one series read can take: (maxPoints / 2000) * timeout.
+    C8Y_DTM_GAPS_TRACE_TIMES  Set to 1 to also write every enumerated timestamp into
+                              verify-measurement-gap-enumerations.json (--traceDir). Off by default,
+                              the counts and the first/last timestamp are always written.
 
 Examples:
     c8y dtm migration opposites create
@@ -83,7 +156,21 @@ Examples:
     c8y dtm migration opposites verify --traceDir ./trace
     c8y dtm migration opposites verify --stats --outputFile "verification_result.json" --traceDir ./trace
     c8y dtm migration opposites verify --measurementGaps --stats
+    c8y dtm migration opposites verify --measurementGaps --dateFrom "-30d"
     c8y dtm migration opposites verify --id "12345" --measurementGapsExact --traceDir ./trace
+    c8y dtm migration opposites verify --measurementGaps \\
+        --assetFragmentTemplate '{sap_category_name}' \\
+        --assetSeriesTemplate '{sap_position_name}#{sap_characteristic_name}' --sanitizeTemplate
+    c8y dtm migration opposites verify --measurementGapsExact --dateFrom "-7d" \\
+        --missingMeasurementsFile ./missing.json
+    c8y dtm migration opposites verify --measurementGapsExact --gapsFor ./previous-run.log
+    c8y dtm migration opposites verify --measurementGapsExact --gapsFor ./trace/verify-errors.json \\
+        --dateFrom "-14d" --missingMeasurementsFile ./missing.json
+    c8y dtm migration opposites verify --measurementGapsExact --gapsFor "3475254,9774415"
+    c8y dtm migration opposites verify --measurementGapsExact --gapsOnly \\
+        --gapsFor ./trace/verify-errors.json --dateFrom "-30d"
+    c8y dtm migration opposites verify --measurementGapsExact --gapsFor ./trace/verify-errors.json \\
+        --gapsForError MissingLinkedSeriesInChildAdditionError
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -148,6 +235,13 @@ checkGetFlagUsage() {
         error "Bad args:" "--measurementGaps/--measurementGapsExact can only be used with 'verify' mode."
         exit 1
     fi
+    if [ "$MEASUREMENT_GAPS" != "true" ]; then
+        local flag
+        for flag in "${GAP_ONLY_FLAGS[@]}"; do
+            error "Bad args:" "$flag can only be used together with --measurementGaps or --measurementGapsExact."
+            exit 1
+        done
+    fi
 }
 
 SINGLE_ID=""
@@ -157,6 +251,20 @@ TRACE_DIR=""
 SHOW_STATS="false"
 MEASUREMENT_GAPS="false"
 MEASUREMENT_GAPS_EXACT="false"
+GAPS_DATE_FROM_INPUT="-2d"
+GAPS_DATE_TO_INPUT="0s"
+ASSET_FRAGMENT_TEMPLATE="{fragment}"
+ASSET_SERIES_TEMPLATE="{series}"
+SANITIZE_TEMPLATE="false"
+USE_SUPPORTED_SERIES="true"
+MISSING_MEASUREMENTS_FILE=""
+GAPS_FOR=""
+GAPS_FOR_ERROR=""
+GAPS_ONLY="false"
+# Flags that only do something while measurement gaps are being determined. Collected
+# while parsing so that using one without --measurementGaps is an error instead of a
+# silently ignored argument.
+GAP_ONLY_FLAGS=()
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -178,6 +286,35 @@ while [ $# -gt 0 ]; do
             ;;
         --includeParentDevice)
             INCLUDE_PARENT_DEVICE="true"
+            ;;
+        --assetFragmentTemplate|--assetSeriesTemplate|--dateFrom|--dateTo|--gapsFor|--gapsForError|--missingMeasurementsFile)
+            if [ -z "${2:-}" ] || [[ "$2" == -* && "$1" != "--dateFrom" && "$1" != "--dateTo" ]]; then
+                error "Bad args:" "$1 requires a value."
+                exit 1
+            fi
+            case "$1" in
+                --assetFragmentTemplate) ASSET_FRAGMENT_TEMPLATE="$2" ;;
+                --assetSeriesTemplate)   ASSET_SERIES_TEMPLATE="$2" ;;
+                --dateFrom)              GAPS_DATE_FROM_INPUT="$2" ;;
+                --dateTo)                GAPS_DATE_TO_INPUT="$2" ;;
+                --gapsFor)               GAPS_FOR="$2"; MEASUREMENT_GAPS="true" ;;
+                --gapsForError)          GAPS_FOR_ERROR="$2" ;;
+                --missingMeasurementsFile) MISSING_MEASUREMENTS_FILE="$2" ;;
+            esac
+            GAP_ONLY_FLAGS+=("$1")
+            shift
+            ;;
+        --noSupportedSeries)
+            USE_SUPPORTED_SERIES="false"
+            GAP_ONLY_FLAGS+=("$1")
+            ;;
+        --gapsOnly)
+            GAPS_ONLY="true"
+            MEASUREMENT_GAPS="true"
+            ;;
+        --sanitizeTemplate)
+            SANITIZE_TEMPLATE="true"
+            GAP_ONLY_FLAGS+=("$1")
             ;;
         --measurementGaps)
             MEASUREMENT_GAPS="true"
@@ -275,6 +412,127 @@ if ! [[ "$GAPS_MAX_POINTS" =~ ^[0-9]+$ ]] || [ "$GAPS_MAX_POINTS" -lt 1 ]; then
     exit 1
 fi
 
+# Guard rails for --missingMeasurementsFile. The batch size is what the reprocess
+# endpoint accepts in one request, the maximum is what is downloaded in total.
+# A single measurement page can occupy the server until its own query budget runs out
+# (two minutes on a time series store), and --includeAll keeps asking for the next one, so
+# an unbounded read of a busy series can run for hours. The request timeout bounds one
+# page, C8Y_DTM_GAPS_MAX_POINTS bounds how many pages are asked for, and together they
+# bound the run. Passed before C8Y_FLAGS so an explicit --timeout still wins.
+GAPS_REQUEST_TIMEOUT="${C8Y_DTM_GAPS_REQUEST_TIMEOUT:-60s}"
+
+REPROCESS_BATCH_SIZE="${C8Y_DTM_REPROCESS_BATCH_SIZE:-10000}"
+REPROCESS_MAX_MEASUREMENTS="${C8Y_DTM_REPROCESS_MAX_MEASUREMENTS:-100000}"
+if ! [[ "$REPROCESS_BATCH_SIZE" =~ ^[0-9]+$ ]] || [ "$REPROCESS_BATCH_SIZE" -lt 1 ]; then
+    error "Bad environment:" "C8Y_DTM_REPROCESS_BATCH_SIZE must be a positive integer, got '$REPROCESS_BATCH_SIZE'."
+    exit 1
+fi
+if ! [[ "$REPROCESS_MAX_MEASUREMENTS" =~ ^[0-9]+$ ]] || [ "$REPROCESS_MAX_MEASUREMENTS" -lt 1 ]; then
+    error "Bad environment:" "C8Y_DTM_REPROCESS_MAX_MEASUREMENTS must be a positive integer, got '$REPROCESS_MAX_MEASUREMENTS'."
+    exit 1
+fi
+
+# Converts an ISO-8601 timestamp with any UTC offset into UTC with a trailing Z, so that
+# the reported window is in the same format as the measurement timestamps it bounds.
+# jq's strptime/mktime always work in UTC, which is what makes this portable.
+# shellcheck disable=SC2016 # $m/$t/$off are jq variables, not shell ones
+JQ_TO_UTC='
+  (capture("^(?<d>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2})(?<f>\\.[0-9]+)?(?<z>Z|[+-][0-9]{2}:?[0-9]{2})$") // null) as $m
+  | if $m == null then empty
+    else (($m.d + "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) as $t
+      | (if $m.z == "Z" then 0
+         else ($m.z | capture("^(?<sg>[+-])(?<oh>[0-9]{2}):?(?<om>[0-9]{2})$")
+               | ((.oh | tonumber) * 3600 + (.om | tonumber) * 60) * (if .sg == "-" then -1 else 1 end))
+         end) as $off
+      | (($t - $off) | strftime("%Y-%m-%dT%H:%M:%S")) + (($m.f // ".000") | .[0:4]) + "Z"
+    end'
+
+# Resolves a --dateFrom/--dateTo value to an absolute UTC timestamp. go-c8y-cli's own
+# date parser is used so that the command accepts exactly what its other date flags
+# accept, absolute timestamps as well as relative values such as -2d or -12h.
+# Usage: resolve_date <value> <flag-name>
+resolve_date() {
+    local value="$1" flag="$2" raw normalised
+    if ! [[ "$value" =~ ^[A-Za-z0-9:+.\ _-]+$ ]]; then
+        error "Bad args:" "$flag holds unsupported characters, got '$value'. Use an absolute ISO-8601 timestamp or a relative value such as -2d."
+        exit 1
+    fi
+    # --nullInput and the redirect both keep c8y from waiting on the stdin of the caller,
+    # which for this call is the terminal the command was started from.
+    raw=$(c8y template execute --template "{v: _.Now(\"$value\")}" --nullInput --output json \
+            </dev/null 2>/dev/null | jq -r '.v // empty')
+    if [ -n "$raw" ]; then
+        normalised=$(printf '%s' "$raw" | jq -R -r "$JQ_TO_UTC")
+    fi
+    if [ -z "$normalised" ]; then
+        error "Bad args:" "$flag could not be resolved to a date, got '$value'. Use an absolute ISO-8601 timestamp or a relative value such as -2d."
+        exit 1
+    fi
+    printf '%s' "$normalised"
+}
+
+# The window every measurement query of the gap analysis is bound to. An explicit window
+# is required in any case: revert needs one, and the default sort order of the
+# measurement API differs between the classic and the time series store. Bounding it
+# narrowly is also the cheapest way to speed the whole analysis up.
+GAPS_DATE_FROM=""
+GAPS_DATE_TO=""
+if [ "$MEASUREMENT_GAPS" = "true" ]; then
+    GAPS_DATE_FROM=$(resolve_date "$GAPS_DATE_FROM_INPUT" "--dateFrom")
+    GAPS_DATE_TO=$(resolve_date "$GAPS_DATE_TO_INPUT" "--dateTo")
+    if [[ "$GAPS_DATE_FROM" > "$GAPS_DATE_TO" ]]; then
+        error "Bad args:" "--dateFrom ($GAPS_DATE_FROM) is after --dateTo ($GAPS_DATE_TO)."
+        exit 1
+    fi
+fi
+
+# A --gapsFor value that is not a file is read as a list of asset ids. Checked here
+# rather than when the selection is parsed, because a mistyped path would otherwise only
+# surface as "no asset selected" after the whole verification has already run.
+if [ -n "$GAPS_FOR" ] && [ ! -f "$GAPS_FOR" ]; then
+    if [[ "$GAPS_FOR" == */* || "$GAPS_FOR" == *.json || "$GAPS_FOR" == *.log || "$GAPS_FOR" == *.txt ]]; then
+        error "Bad args:" "--gapsFor '$GAPS_FOR' looks like a file but does not exist."
+        exit 1
+    fi
+    if ! [[ "$GAPS_FOR" =~ ^[0-9]+([,;[:space:]]+[0-9]+)*$ ]]; then
+        error "Bad args:" "--gapsFor '$GAPS_FOR' is neither an existing file nor a list of asset ids."
+        exit 1
+    fi
+fi
+
+if [ "$GAPS_ONLY" = "true" ] && [ -z "$GAPS_FOR" ]; then
+    error "Bad args:" "--gapsOnly needs --gapsFor to know which links to look at."
+    exit 1
+fi
+if [ "$GAPS_ONLY" = "true" ] && [ -n "$SINGLE_ID" ]; then
+    error "Bad args:" "--gapsOnly cannot be combined with --id. Name the asset with --gapsFor instead."
+    exit 1
+fi
+
+# Which reported errors a --gapsFor source may select links from. By default everything
+# except CumulocityError: that one means the source device could not be read at all, so
+# there is no reverse index to repair, nothing to reprocess into, and every one of its
+# links would only cost probes to report that the device has no measurements. A single
+# such line can carry hundreds of links, see the ordering in gap-plan-merge.jq.
+GAPS_INCLUDE_ERRORS="[]"
+GAPS_EXCLUDE_ERRORS='["CumulocityError"]'
+GAPS_ERROR_DESCRIPTION="every reported error except CumulocityError"
+if [ -n "$GAPS_FOR_ERROR" ]; then
+    if [ "$GAPS_FOR_ERROR" = "all" ]; then
+        GAPS_EXCLUDE_ERRORS="[]"
+        GAPS_ERROR_DESCRIPTION="every reported error"
+    else
+        GAPS_INCLUDE_ERRORS=$(jq -c -n --arg v "$GAPS_FOR_ERROR" \
+            '$v | split(",") | map(sub("^\\s+"; "") | sub("\\s+$"; "")) | map(select(length > 0))')
+        GAPS_EXCLUDE_ERRORS="[]"
+        if [ "$(printf '%s' "$GAPS_INCLUDE_ERRORS" | jq 'length')" -eq 0 ]; then
+            error "Bad args:" "--gapsForError '$GAPS_FOR_ERROR' names no error type."
+            exit 1
+        fi
+        GAPS_ERROR_DESCRIPTION=$(printf '%s' "$GAPS_INCLUDE_ERRORS" | jq -r 'join(", ")')
+    fi
+fi
+
 if [ -n "$TRACE_DIR" ]; then
     mkdir -p "$TRACE_DIR"
     info "Trace enabled. Intermediate data will be written to '$TRACE_DIR'."
@@ -343,27 +601,43 @@ render_verification_statistics() {
     printf '%s\n' "$1" | jq -r -f "$JQ_DIR/render-statistics.jq" >&2
 }
 
-# Reads all measurement timestamps of one series into a file, capped at
-# C8Y_DTM_GAPS_MAX_POINTS. --nullInput is required because --device accepts pipeline
-# input and would otherwise swallow the stdin of the calling loop.
+# Reads one measurement series into a file, one JSON object per line, capped at
+# C8Y_DTM_GAPS_MAX_POINTS. Used twice: with --select time to enumerate the timestamps of
+# a series, and without a selection to download the full measurements behind a gap.
+# --nullInput is required because --device accepts pipeline input and would otherwise
+# swallow the stdin of the calling loop.
 #
-# fragment and series must be passed percent-encoded. go-c8y-cli decodes the value of
-# a query flag once before it builds the request, and Go's query parser rejects a
-# literal ';' as it appears in every OPC UA node id such as "ns=2;s=Machine/Temp". An
-# unencoded value makes go-c8y-cli drop --valueFragmentSeries silently, and the call
-# would then return the measurements of every series of the fragment. Verify with:
+# fragment and series must be passed percent-encoded ONCE. An unencoded value makes
+# go-c8y-cli drop --valueFragmentSeries silently when the series holds a ';', as every
+# OPC UA node id does ("ns=2;s=Machine/Temp"), and the call would then return the
+# measurements of every series of the fragment. Verify with --dryFormat curl:
 #   c8y measurements list --device 1 --valueFragmentSeries "$(jq -rn --arg s "$s" '$s|@uri')" \
-#       --dry --dryFormat json | jq -r .query
-# The url of `c8y api` is decoded twice instead, see gap-bound-requests.jq.
+#       --nullInput --dry --dryFormat curl
+# and check that the url carries %3B / %23 rather than a bare ';' or '#'. Do NOT check
+# this with --dryFormat json: it renders .query decoded, which looks the same for a
+# correct request and for a broken one.
+# The url of `c8y api` needs one encoding more, see gap-bound-requests.jq.
 #
-# Usage: enumerate_series_times <source-id> <fragment-uri> <series-uri> <out-file>
-# Sets GAP_TRUNCATED and GAP_FAILED as the return channel for the caller.
-enumerate_series_times() {
-    local source_id="$1" fragment="$2" series="$3" out_file="$4"
-    local read_count
-    local -a status
+# Usage: read_series <source-id> <fragment-uri> <series-uri> <date-from> <date-to> <select> <out-file> [order]
+#        select may be empty to get the complete measurements instead of a projection.
+#        order is "asc" (default, oldest first) or "desc" (newest first).
+# Sets GAP_TRUNCATED, GAP_FAILED and GAP_POINTS as the return channel for the caller.
+read_series() {
+    local source_id="$1" fragment="$2" series="$3" date_from="$4" date_to="$5" select="$6" out_file="$7"
+    local order="${8:-asc}"
+    local read_count revert="false"
+    local -a status select_args=()
     GAP_TRUNCATED="false"
     GAP_FAILED="false"
+    GAP_POINTS=0
+    GAP_SECONDS=$SECONDS
+
+    if [ -n "$select" ]; then
+        select_args=(--select "$select")
+    fi
+    if [ "$order" = "desc" ]; then
+        revert="true"
+    fi
 
     # head stops the paging of --includeAll once the cap is reached, one line beyond
     # the cap is read to tell a complete series from a truncated one.
@@ -372,11 +646,13 @@ enumerate_series_times() {
         --device "$source_id" \
         --valueFragmentType "$fragment" \
         --valueFragmentSeries "$series" \
-        --dateFrom "$GAPS_DATE_FROM" \
-        --dateTo "$GAPS_DATE_TO" \
-        --revert=false \
+        --dateFrom "$date_from" \
+        --dateTo "$date_to" \
+        --revert="$revert" \
         --includeAll \
-        --select time \
+        --output json \
+        --timeout "$GAPS_REQUEST_TIMEOUT" \
+        "${select_args[@]}" \
         --nullInput \
         "${C8Y_FLAGS[@]}" 2>>"$GAPS_WORK_DIR/gap-measurements-stderr.log" \
       | head -n "$((GAPS_MAX_POINTS + 1))" > "$out_file"
@@ -392,6 +668,248 @@ enumerate_series_times() {
         # 141 is SIGPIPE, which only happens when head closed the stream on the cap
         GAP_FAILED="true"
     fi
+    GAP_POINTS=$(wc -l < "$out_file" | tr -d ' \n\r\t')
+    GAP_SECONDS=$((SECONDS - GAP_SECONDS))
+
+    # A read that is slow enough to notice is worth naming while it is happening, not
+    # only afterwards in a trace file: it is the difference between "still working" and
+    # "hung" for whoever is watching the terminal.
+    if [ "$GAP_SECONDS" -ge 30 ]; then
+        info "Read $GAP_POINTS timestamps of $series on $source_id in ${GAP_SECONDS}s ($order)."
+    fi
+}
+
+# Records what one series read actually returned, so that "were these measurements even
+# looked at" is answerable from the trace instead of by re-running the query by hand.
+# The timestamps themselves are only written with C8Y_DTM_GAPS_TRACE_TIMES=1: there can
+# be hundreds of thousands of them per link.
+#
+# Usage: trace_enumeration <bounds-record> <side> <times-file>
+trace_enumeration() {
+    local bound_rec="$1" side="$2" times_file="$3"
+    [ -n "$TRACE_DIR" ] || return 0
+    jq -c -n \
+        --argjson bounds "$bound_rec" \
+        --arg side "$side" \
+        --arg order "$GAP_ORDER" \
+        --argjson truncated "$GAP_TRUNCATED" \
+        --argjson failed "$GAP_FAILED" \
+        --argjson seconds "${GAP_SECONDS:-0}" \
+        --argjson traceTimes "${C8Y_DTM_GAPS_TRACE_TIMES:-0}" \
+        --slurpfile times "$times_file" \
+        '($times | map(if type == "object" then .time else . end) | map(select(type == "string"))) as $t
+         | { key: $bounds.key, side: $side,
+             source: (if $side == "device" then $bounds.sourceId else $bounds.assetId end),
+             fragment: (if $side == "device" then $bounds.sourceFragment else $bounds.assetFragment end),
+             series: (if $side == "device" then $bounds.sourceSeries else $bounds.assetSeries end),
+             dateFrom: $bounds.dateFrom, dateTo: $bounds.dateTo,
+             order: $order, truncated: $truncated, failed: $failed, seconds: $seconds,
+             points: ($t | length), first: ($t | min), last: ($t | max),
+             probeLast: (if $side == "device" then $bounds.device.last else $bounds.asset.last end) }
+         + (if $traceTimes != 0 then { times: $t } else {} end)' \
+      >> "$GAPS_WORK_DIR/gap-enumerations.json"
+}
+
+# Reads one series and, if the ascending read comes back empty while the boundary probe
+# proved the series holds measurements, reads it again newest first.
+#
+# The ascending read is the one that a time series store struggles with: it sorts forward
+# over the whole window, and on a busy device series it has been observed to return an
+# empty page with no error at all, while the descending read of the very same series
+# answers immediately. Retrying in the other direction turns that silent nothing into
+# either the data or a confirmed failure, and the boundary probe is what makes the
+# contradiction detectable in the first place.
+#
+# Usage: read_series_resilient <source-id> <fragment-uri> <series-uri> <select> <out-file> <probe-found-data>
+# Sets GAP_TRUNCATED, GAP_FAILED, GAP_POINTS and GAP_ORDER.
+read_series_resilient() {
+    local source_id="$1" fragment="$2" series="$3" select="$4" out_file="$5" probe_found="$6"
+
+    GAP_ORDER="asc"
+    read_series "$source_id" "$fragment" "$series" "$GAPS_DATE_FROM" "$GAPS_DATE_TO" "$select" "$out_file" "asc"
+
+    if [ "$GAP_POINTS" -eq 0 ] && [ "$probe_found" = "true" ] && [ "$GAP_FAILED" != "true" ]; then
+        info "Empty ascending read for a series the boundary probe found data on, retrying newest first (device $source_id)."
+        GAP_ORDER="desc"
+        read_series "$source_id" "$fragment" "$series" "$GAPS_DATE_FROM" "$GAPS_DATE_TO" "$select" "$out_file" "desc"
+    fi
+}
+
+# Reads --gapsFor and matches it against the links that are on the assets right now.
+# Writes the matched candidates to gap-selected.json in the work dir.
+#
+# The point of this is a link that WAS reported broken and has been repaired since: it
+# no longer shows up as an error, so nothing would be probed for it, while the
+# measurements it missed while the reverse index was broken are exactly what one wants
+# to see. The report of the earlier run says which links those were, and everything else
+# is read from the live asset, so a report of any age stays usable.
+#
+# Reads --gapsFor into selectors. Touches no tenant data at all, so it can run before
+# anything is loaded and tell the caller which assets are worth loading in the first
+# place.
+#
+# Usage: parse_gap_selection <out-file>
+parse_gap_selection() {
+    local selection="$1"
+    local selector_count
+
+    if [ ! -f "$GAPS_FOR" ]; then
+        # Not a file, so the value itself is the list of ids. It goes through the text
+        # parser, which already splits on commas and whitespace.
+        printf '%s\n' "$GAPS_FOR" | jq -R -c -L "$JQ_DIR" \
+            --argjson includeErrors "$GAPS_INCLUDE_ERRORS" --argjson excludeErrors "$GAPS_EXCLUDE_ERRORS" \
+            -f "$JQ_DIR/gap-selection.jq" > "$selection"
+    elif jq -e -s 'type' "$GAPS_FOR" >/dev/null 2>&1; then
+        # The file is JSON as a whole: one object per line as trace_write leaves
+        # verify-errors.json, the same values pretty printed, an array around them, or a
+        # plain list of ids. Slurping covers all of those in one go.
+        jq -s -c -L "$JQ_DIR" \
+            --argjson includeErrors "$GAPS_INCLUDE_ERRORS" --argjson excludeErrors "$GAPS_EXCLUDE_ERRORS" \
+            -f "$JQ_DIR/gap-selection-json.jq" "$GAPS_FOR" > "$selection"
+    else
+        # Not JSON, so it is a pasted log or a commented id list, read line by line.
+        jq -R -c -L "$JQ_DIR" \
+            --argjson includeErrors "$GAPS_INCLUDE_ERRORS" --argjson excludeErrors "$GAPS_EXCLUDE_ERRORS" \
+            -f "$JQ_DIR/gap-selection.jq" "$GAPS_FOR" > "$selection"
+    fi
+    trace_write "verify-measurement-gap-selection.json" "$(cat "$selection")"
+
+    selector_count=$(wc -l < "$selection" | tr -d ' \n\r\t')
+    if [ "$selector_count" -eq 0 ]; then
+        warn "--gapsFor '$GAPS_FOR' named no asset or device that --gapsForError allows." \
+             "Errors kept: ${GAPS_ERROR_DESCRIPTION}. Pass a file with a previous run's JSON, a pasted log or plain asset ids, or a comma separated list of asset ids."
+        return 1
+    fi
+    return 0
+}
+
+# Matches the parsed selectors against the links that are on the assets right now.
+# Writes the matched candidates to gap-selected.json in the work dir.
+#
+# The point of this is a link that WAS reported broken and has been repaired since: it
+# no longer shows up as an error, so nothing would be probed for it, while the
+# measurements it missed while the reverse index was broken are exactly what one wants
+# to see. The report of the earlier run says which links those were, and everything else
+# is read from the live asset, so a report of any age stays usable.
+#
+# Usage: match_gap_selection <links-file>
+match_gap_selection() {
+    local links_file="$1"
+    local selection="$GAPS_WORK_DIR/gap-selection.json"
+    local selector_count matched_count unmatched
+
+    [ -s "$selection" ] || return 0
+    selector_count=$(wc -l < "$selection" | tr -d ' \n\r\t')
+
+    jq -c -s --slurpfile selection "$selection" -f "$JQ_DIR/gap-selection-plan.jq" \
+        "$links_file" > "$GAPS_WORK_DIR/gap-selected.json"
+    matched_count=$(wc -l < "$GAPS_WORK_DIR/gap-selected.json" | tr -d ' \n\r\t')
+
+    # A selector that matches nothing is worth saying out loud: the asset may have been
+    # deleted, or the link may have been removed from it since the report was written.
+    unmatched=$(jq -r -n \
+        --slurpfile selection "$selection" \
+        --slurpfile links "$GAPS_WORK_DIR/gap-selected.json" \
+        '($links | map(.assetId) | unique) as $assets
+         | ($links | map(.sourceId) | unique) as $devices
+         | [ $selection[]
+             | select((.assetId != null and (.assetId | IN($assets[]) | not))
+                      or (.sourceId != null and (.sourceId | IN($devices[]) | not)))
+             | (.assetId // .sourceId) ]
+         | unique | join(", ")')
+    if [ -n "$unmatched" ]; then
+        warn "--gapsFor named assets or devices without a matching linked series: $unmatched" \
+             "They are ignored. The asset may have been deleted, or its linked series may have been removed since the report was written."
+    fi
+
+    # Broken down by how the links were asked for, because one device wide selector can
+    # contribute hundreds of links and would otherwise silently dominate the count and,
+    # under C8Y_DTM_GAPS_MAX_LINKS, the run.
+    local by_precision exact_count asset_count device_count
+    by_precision=$(jq -r -s \
+        '[ (map(select(.selectionPrecision == 0)) | length),
+           (map(select(.selectionPrecision == 1)) | length),
+           (map(select(.selectionPrecision == 2)) | length) ] | @tsv' \
+        "$GAPS_WORK_DIR/gap-selected.json")
+    IFS=$'\t' read -r exact_count asset_count device_count <<< "$by_precision"
+    info "--gapsFor selected $matched_count links from $selector_count selectors: $exact_count named individually, $asset_count from a whole asset, $device_count from a whole device."
+    if [ "$device_count" -gt 0 ]; then
+        info "Links selected through a whole device are probed last, so a device wide selector cannot use up the link limit before the named links are covered."
+    fi
+}
+
+# Asks every asset and every source device of the plan which series it actually holds
+# measurements for, and marks the boundary probes that this makes unnecessary. One
+# request per managed object replaces up to four probes per link, and several links of
+# the same asset or device share one lookup.
+#
+# The index covers all of time and cannot confirm data inside --dateFrom/--dateTo, so it
+# is only ever used as a negative: a series that is absent from it never received a
+# measurement at all, which no probe could have found out differently.
+#
+# Usage: apply_supported_series <plan-file>
+# Rewrites the plan file in place, adding supportedSeriesShortcut/probeDevice/probeAsset.
+apply_supported_series() {
+    local plan_file="$1"
+    local ids supported id_count with_series device_count shortcut_count
+
+    [ "$USE_SUPPORTED_SERIES" = "true" ] || return 0
+
+    ids=$(jq -c -s '[ .[] | select(.probe) | { id: .assetId }, { id: .sourceId } ] | unique | .[]' "$plan_file")
+    if is_empty_result_set "$ids"; then
+        return 0
+    fi
+    id_count=$(count_lines "$ids")
+    info "Reading the supported series of $id_count assets and source devices..."
+
+    # std.get instead of output.c8y_SupportedSeries: a device that cannot be read answers
+    # with an error object, and jsonnet aborts the whole call on a field that does not
+    # exist rather than yielding null for that one record.
+    set +e
+    supported=$(
+      printf '%s\n' "$ids" |
+      c8y devices getSupportedSeries \
+          --withError \
+          --abortOnErrors "$ABORT_ON_ERRORS" \
+          --outputTemplate 'input.value + { supportedSeries: (if std.isObject(output) then std.get(output, "c8y_SupportedSeries", null) else null) }' \
+          "${C8Y_FLAGS[@]}" 2>"$GAPS_WORK_DIR/gap-supported-series-stderr.log"
+    )
+    set -e
+    printf '%s\n' "$supported" > "$GAPS_WORK_DIR/gap-supported-series.json"
+    trace_write "verify-measurement-supported-series.json" "$supported"
+
+    # Sanity check before anything is skipped: every source device of the plan is known
+    # to hold the linked series, so if not a single one of them reports any supported
+    # series at all, the index is not usable on this tenant and using it as a negative
+    # would report a tenant wide 'noSourceData' that is simply wrong.
+    device_count=$(jq -s -r '[ .[] | select(.probe) | .sourceId ] | unique | length' "$plan_file")
+    with_series=$(jq -n -r \
+        --slurpfile plan "$plan_file" \
+        --slurpfile supported "$GAPS_WORK_DIR/gap-supported-series.json" \
+        '([ $plan[] | select(.probe) | .sourceId | tostring ] | unique) as $devices
+         | [ $supported[]
+             | select((.supportedSeries | type) == "array" and (.supportedSeries | length) > 0)
+             | .id | tostring ]
+         | map(select(IN($devices[]))) | unique | length')
+    if [ "$with_series" -eq 0 ]; then
+        warn "The supported series index reported nothing for any of the $device_count source devices." \
+             "It is not used to skip boundary probes in this run. Every link is probed as usual."
+        if [ -s "$GAPS_WORK_DIR/gap-supported-series-stderr.log" ]; then
+            tail -n 5 "$GAPS_WORK_DIR/gap-supported-series-stderr.log" >&2
+        fi
+        return 0
+    fi
+
+    jq -c -n \
+        --slurpfile plan "$plan_file" \
+        --slurpfile supported "$GAPS_WORK_DIR/gap-supported-series.json" \
+        -f "$JQ_DIR/gap-supported-series.jq" > "$plan_file.enriched"
+    mv "$plan_file.enriched" "$plan_file"
+
+    shortcut_count=$(jq -s '[ .[] | select(.supportedSeriesShortcut != null) ] | length' "$plan_file")
+    if [ "$shortcut_count" -gt 0 ]; then
+        info "$shortcut_count links are classified from the supported series index, their boundary probes are skipped."
+    fi
 }
 
 # Determines, for every link reported as MissingLinkedSeriesInChildAdditionError, the
@@ -404,16 +922,34 @@ enumerate_series_times() {
 # individual timestamps, of the device only when the asset series is empty, and of
 # both sides when they have to be compared one by one.
 #
-# Usage: compute_measurement_gaps <error-items> <work-dir>
-# Writes one gap record per missing link to stdout.
+# Usage: compute_measurement_gaps <error-items> <work-dir> <links-file>
+# Writes one gap record per link to stdout.
 compute_measurement_gaps() {
     local error_items="$1"
     GAPS_WORK_DIR="$2"
+    local links_file="$3"
 
     local plan plan_count probe_count requests probes request_count response_count
-    plan=$(printf '%s\n' "$error_items" | jq -c -s --argjson maxLinks "$GAPS_MAX_LINKS" -f "$JQ_DIR/gap-plan.jq")
+    local selected_count=0
+    printf '%s\n' "$error_items" | jq -c -s -f "$JQ_DIR/gap-plan.jq" > "$GAPS_WORK_DIR/gap-failing.json"
+    : > "$GAPS_WORK_DIR/gap-selected.json"
+
+    if [ -n "$GAPS_FOR" ]; then
+        # In --gapsOnly the selection was already parsed, it decided what to load.
+        if [ ! -s "$GAPS_WORK_DIR/gap-selection.json" ]; then
+            parse_gap_selection "$GAPS_WORK_DIR/gap-selection.json" || true
+        fi
+        match_gap_selection "$links_file"
+        selected_count=$(wc -l < "$GAPS_WORK_DIR/gap-selected.json" | tr -d ' \n\r\t')
+    fi
+
+    plan=$(jq -c -n \
+        --slurpfile failing "$GAPS_WORK_DIR/gap-failing.json" \
+        --slurpfile selected "$GAPS_WORK_DIR/gap-selected.json" \
+        --argjson maxLinks "$GAPS_MAX_LINKS" \
+        -f "$JQ_DIR/gap-plan-merge.jq")
     if is_empty_result_set "$plan"; then
-        info "No missing links found, no measurement gaps to determine."
+        info "No missing or selected links found, no measurement gaps to determine."
         return 0
     fi
 
@@ -422,18 +958,26 @@ compute_measurement_gaps() {
     probe_count=$(jq -s '[.[] | select(.probe)] | length' "$GAPS_WORK_DIR/gap-plan.json")
 
     if [ "$probe_count" -lt "$plan_count" ]; then
-        warn "Measurement gaps are only determined for $probe_count of $plan_count missing links." \
-             "Raise C8Y_DTM_GAPS_MAX_LINKS to cover more, the remaining links are reported with method 'skipped'."
+        warn "Measurement gaps are only determined for $probe_count of $plan_count links." \
+             "Raise C8Y_DTM_GAPS_MAX_LINKS to cover more, the remaining links are reported with method 'skipped'. Links missing from the reverse index are covered first."
     fi
-    info "Determining measurement gaps for $probe_count of $plan_count missing links..."
+    info "Determining measurement gaps for $probe_count of $plan_count links ($selected_count selected with --gapsFor) between $GAPS_DATE_FROM and $GAPS_DATE_TO..."
 
-    # An explicit window is required: revert needs one, and the default sort order of
-    # the measurement API differs between the classic and the time series store.
-    GAPS_DATE_FROM="1970-01-01T00:00:00.000Z"
-    GAPS_DATE_TO=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    apply_supported_series "$GAPS_WORK_DIR/gap-plan.json"
+
+    # The oldest measurement is only needed to report where an assetEmpty gap starts, and
+    # only the boundary-only mode reports that from a probe. The exact mode enumerates the
+    # timestamps anyway, so it skips the ascending query entirely: it is the expensive one
+    # and the one that runs into server side query timeouts on a time series store.
+    local probe_first="true"
+    if [ "$MEASUREMENT_GAPS_EXACT" = "true" ]; then
+        probe_first="false"
+    fi
 
     requests=$(jq -c --arg dateFrom "$GAPS_DATE_FROM" --arg dateTo "$GAPS_DATE_TO" \
+        --argjson probeFirst "$probe_first" \
         -f "$JQ_DIR/gap-bound-requests.jq" "$GAPS_WORK_DIR/gap-plan.json")
+    printf '%s\n' "$requests" > "$GAPS_WORK_DIR/gap-requests.json"
     trace_write "verify-measurement-gap-requests.json" "$requests"
 
     # c8y api maps the url property of a piped object onto its --url flag, so the
@@ -450,10 +994,19 @@ compute_measurement_gaps() {
     set -e
     printf '%s\n' "$probes" > "$GAPS_WORK_DIR/gap-probes.json"
 
+    trace_write "verify-measurement-gap-probes.json" "$probes"
+
+    # Compared by (link, side, bound) rather than by counting lines: a response can span
+    # more than one line and an error response carries no fewer answers than a good one,
+    # so a line count says nothing about coverage and produced false alarms.
     request_count=$(count_lines "$requests")
-    response_count=$(count_lines "$probes")
-    if [ "$response_count" -ne "$request_count" ]; then
-        warn "Incomplete measurement boundary probes. Sent $request_count requests but received $response_count responses." \
+    response_count=$(jq -r -n \
+        --slurpfile requests "$GAPS_WORK_DIR/gap-requests.json" \
+        --slurpfile probes "$GAPS_WORK_DIR/gap-probes.json" \
+        '($probes | map(.key + "|" + .side + "|" + .bound) | unique) as $have
+         | [ $requests[] | (.key + "|" + .side + "|" + .bound) | select(IN($have[])) ] | length' 2>/dev/null || echo 0)
+    if [ "$response_count" -lt "$request_count" ]; then
+        warn "Incomplete measurement boundary probes. Sent $request_count requests but $((request_count - response_count)) got no answer." \
              "The affected links are reported with method 'probeFailed'."
         if [ -s "$GAPS_WORK_DIR/gap-probe-stderr.log" ]; then
             tail -n 10 "$GAPS_WORK_DIR/gap-probe-stderr.log" >&2
@@ -463,6 +1016,7 @@ compute_measurement_gaps() {
     jq -c -n \
         --slurpfile plan "$GAPS_WORK_DIR/gap-plan.json" \
         --slurpfile probes "$GAPS_WORK_DIR/gap-probes.json" \
+        --argjson probeFirst "$probe_first" \
         -f "$JQ_DIR/gap-bounds.jq" > "$GAPS_WORK_DIR/gap-bounds.json"
     trace_write "verify-measurement-gap-bounds.json" "$(cat "$GAPS_WORK_DIR/gap-bounds.json")"
 
@@ -475,7 +1029,8 @@ compute_measurement_gaps() {
         # Boundary-only estimate: device.first/last and asset.first/last from the probe
         # above are all gap-diff-fast.jq needs, so no further measurement query runs.
         info "Estimating gaps from series boundaries only. Use --measurementGapsExact for exact point counts."
-        jq -c -f "$JQ_DIR/gap-diff-fast.jq" "$GAPS_WORK_DIR/gap-bounds.json" | jq -c 'del(.missingTimes)' >> "$records"
+        jq -c --arg dateFrom "$GAPS_DATE_FROM" -f "$JQ_DIR/gap-diff-fast.jq" \
+            "$GAPS_WORK_DIR/gap-bounds.json" | jq -c 'del(.missingTimes)' >> "$records"
         cat "$records"
         return 0
     fi
@@ -484,39 +1039,49 @@ compute_measurement_gaps() {
     local asset_times="$GAPS_WORK_DIR/gap-asset-times.json"
     local current="$GAPS_WORK_DIR/gap-current.json"
 
+    local enumerations="$GAPS_WORK_DIR/gap-enumerations.json"
+    : > "$enumerations"
+
     local bound_rec method probe_state
     while IFS= read -r bound_rec; do
         [ -n "$bound_rec" ] || continue
         method=$(printf '%s' "$bound_rec" | jq -r '.method')
         : > "$device_times"
         : > "$asset_times"
-        local device_truncated="false" device_failed="false"
-        local asset_truncated="false" asset_failed="false"
+        local device_truncated="false" device_failed="false" device_order="asc"
+        local asset_truncated="false" asset_failed="false" asset_order="asc"
 
         if [ "$method" = "assetEmpty" ] || [ "$method" = "timestampDiff" ]; then
-            enumerate_series_times \
+            read_series_resilient \
                 "$(printf '%s' "$bound_rec" | jq -r '.sourceId')" \
                 "$(printf '%s' "$bound_rec" | jq -r '.sourceFragment | @uri')" \
                 "$(printf '%s' "$bound_rec" | jq -r '.sourceSeries | @uri')" \
-                "$device_times"
+                "time" "$device_times" \
+                "$(printf '%s' "$bound_rec" | jq -r 'if .device.last != null then "true" else "false" end')"
             device_truncated="$GAP_TRUNCATED"
             device_failed="$GAP_FAILED"
+            device_order="$GAP_ORDER"
+            trace_enumeration "$bound_rec" "device" "$device_times"
         fi
         if [ "$method" = "timestampDiff" ]; then
-            enumerate_series_times \
+            read_series_resilient \
                 "$(printf '%s' "$bound_rec" | jq -r '.assetId')" \
-                "$(printf '%s' "$bound_rec" | jq -r '.fragment | @uri')" \
-                "$(printf '%s' "$bound_rec" | jq -r '.series | @uri')" \
-                "$asset_times"
+                "$(printf '%s' "$bound_rec" | jq -r '.assetFragment | @uri')" \
+                "$(printf '%s' "$bound_rec" | jq -r '.assetSeries | @uri')" \
+                "time" "$asset_times" \
+                "$(printf '%s' "$bound_rec" | jq -r 'if .asset.last != null then "true" else "false" end')"
             asset_truncated="$GAP_TRUNCATED"
             asset_failed="$GAP_FAILED"
+            asset_order="$GAP_ORDER"
+            trace_enumeration "$bound_rec" "asset" "$asset_times"
         fi
 
         probe_state=$(jq -c -n \
             --argjson deviceTruncated "$device_truncated" --argjson deviceFailed "$device_failed" \
             --argjson assetTruncated "$asset_truncated" --argjson assetFailed "$asset_failed" \
-            '{ device: { truncated: $deviceTruncated, failed: $deviceFailed },
-               asset:  { truncated: $assetTruncated,  failed: $assetFailed } }')
+            --arg deviceOrder "$device_order" --arg assetOrder "$asset_order" \
+            '{ device: { truncated: $deviceTruncated, failed: $deviceFailed, order: $deviceOrder },
+               asset:  { truncated: $assetTruncated,  failed: $assetFailed,  order: $assetOrder } }')
 
         # The exact timestamps can be a very large array, so the record is kept in a
         # file and split from there instead of being carried in a shell variable.
@@ -534,6 +1099,8 @@ compute_measurement_gaps() {
     done < "$GAPS_WORK_DIR/gap-bounds.json"
 
     if [ -n "$TRACE_DIR" ]; then
+        cp "$enumerations" "$TRACE_DIR/verify-measurement-gap-enumerations.json"
+        info "Trace: $TRACE_DIR/verify-measurement-gap-enumerations.json ($(wc -l < "$enumerations" | tr -d ' \n\r\t') lines)"
         cp "$points" "$TRACE_DIR/verify-measurement-gap-points.json"
         info "Trace: $TRACE_DIR/verify-measurement-gap-points.json ($(wc -l < "$points" | tr -d ' \n\r\t') lines)"
         if [ -s "$GAPS_WORK_DIR/gap-measurements-stderr.log" ]; then
@@ -543,6 +1110,281 @@ compute_measurement_gaps() {
     fi
 
     cat "$records"
+}
+
+# Downloads the device measurements behind the reported gaps and writes them as
+# ready-to-POST batches for POST /service/dtm/reprocess/measurements.
+#
+# The payload is the ORIGINAL DEVICE measurement, never a reconstructed asset one:
+# dtm-data-service re-runs the smart functions on an ingested device measurement and
+# derives the asset side from the reverse index itself, so the reverse index has to be
+# repaired first (create mode) and the same measurements are then simply fed in again.
+#
+# Usage: export_missing_measurements <records-file> <points-file>
+export_missing_measurements() {
+    local records_file="$1" points_file="$2"
+    local plan_file="$GAPS_WORK_DIR/gap-reprocess-plan.json"
+    local all_file="$GAPS_WORK_DIR/gap-reprocess-measurements.json"
+    local range_file="$GAPS_WORK_DIR/gap-reprocess-range.json"
+    local times_file="$GAPS_WORK_DIR/gap-reprocess-times.json"
+    local dedup_file="$GAPS_WORK_DIR/gap-reprocess-dedup.json"
+    local prefix group_count total=0 written stopped="false" batch_count
+    local group range_count
+
+    jq -c -n --slurpfile records "$records_file" --slurpfile points "$points_file" \
+        -f "$JQ_DIR/gap-reprocess-plan.jq" > "$plan_file"
+
+    group_count=$(wc -l < "$plan_file" | tr -d ' \n\r\t')
+    if [ "$group_count" -eq 0 ]; then
+        info "No gap ranges to download, no reprocess batches written."
+        return 0
+    fi
+
+    info "Downloading the measurements of $group_count gap ranges for reprocessing..."
+    : > "$all_file"
+
+    while IFS= read -r group; do
+        [ -n "$group" ] || continue
+        read_series \
+            "$(printf '%s' "$group" | jq -r '.sourceId')" \
+            "$(printf '%s' "$group" | jq -r '.sourceFragment | @uri')" \
+            "$(printf '%s' "$group" | jq -r '.sourceSeries | @uri')" \
+            "$(printf '%s' "$group" | jq -r '.dateFrom')" \
+            "$(printf '%s' "$group" | jq -r '.dateTo')" \
+            "" \
+            "$range_file"
+        if [ "$GAP_FAILED" = "true" ]; then
+            warn "Could not download the measurements of one gap range." \
+                 "See the trace stderr log. The affected measurements are missing from the reprocess batches."
+            continue
+        fi
+        if [ "$GAP_TRUNCATED" = "true" ]; then
+            warn "A gap range hit C8Y_DTM_GAPS_MAX_POINTS while downloading." \
+                 "Its reprocess batches are incomplete, raise the limit or narrow --dateFrom/--dateTo."
+        fi
+
+        # In the exact mode only the timestamps that are really missing are kept, which
+        # also removes the overshoot of the range end. Without an exact set (the
+        # boundary-only mode) the whole range is what was reported as missing.
+        printf '%s' "$group" | jq -c '.times | reduce .[] as $t ({}; .[$t] = true)' > "$times_file"
+        if [ "$(printf '%s' "$group" | jq -r '.times | length')" -gt 0 ]; then
+            jq -c --slurpfile set "$times_file" 'select($set[0][.time] != null)' "$range_file" >> "$all_file"
+        else
+            cat "$range_file" >> "$all_file"
+        fi
+
+        total=$(wc -l < "$all_file" | tr -d ' \n\r\t')
+        if [ "$total" -ge "$REPROCESS_MAX_MEASUREMENTS" ]; then
+            stopped="true"
+            break
+        fi
+    done < "$plan_file"
+
+    if [ "$stopped" = "true" ]; then
+        warn "Stopped downloading at $total measurements (C8Y_DTM_REPROCESS_MAX_MEASUREMENTS)." \
+             "The reprocess batches cover only a part of the reported gaps."
+    fi
+
+    # One device measurement can carry several series, so the same measurement can come
+    # back from more than one range. Reprocessing it twice would run every smart function
+    # twice, hence the deduplication by id. Streaming through awk keeps only the ids in
+    # memory, the measurements themselves are never slurped.
+    jq -r '[ (.id // ("line-" + (input_line_number | tostring))), tojson ] | @tsv' "$all_file" \
+      | awk -F'\t' '!seen[$1]++ { print $2 }' > "$dedup_file"
+
+    written=$(wc -l < "$dedup_file" | tr -d ' \n\r\t')
+    if [ "$written" -eq 0 ]; then
+        info "No measurements found in the reported gap ranges. No reprocess batches written."
+        return 0
+    fi
+
+    prefix="${MISSING_MEASUREMENTS_FILE%.json}"
+    rm -f "$prefix".[0-9][0-9][0-9][0-9].json
+    awk -v batch="$REPROCESS_BATCH_SIZE" -v prefix="$prefix" '
+        { file = sprintf("%s.%04d.json", prefix, int((NR - 1) / batch) + 1)
+          if (file != current) {
+              if (current != "") print "]}" > current
+              current = file
+              printf "{\"measurements\":[" > current
+              first = 1
+          }
+          if (!first) printf "," > current
+          printf "%s", $0 > current
+          first = 0 }
+        END { if (current != "") print "]}" > current }
+    ' "$dedup_file"
+
+    batch_count=$(( (written + REPROCESS_BATCH_SIZE - 1) / REPROCESS_BATCH_SIZE ))
+    success "Wrote $written missing measurements to $batch_count reprocess batch file(s) '$prefix.NNNN.json'."
+    info "Send them with: for f in $prefix.*.json; do c8y api POST /service/dtm/reprocess/measurements --file \"\$f\" --header \"Content-Type: application/vnd.com.nsn.cumulocity.measurementcollection+json\"; done"
+
+    if [ -n "$TRACE_DIR" ]; then
+        range_count=$(wc -l < "$plan_file" | tr -d ' \n\r\t')
+        cp "$plan_file" "$TRACE_DIR/verify-reprocess-plan.json"
+        if [ -s "$GAPS_WORK_DIR/gap-measurements-stderr.log" ]; then
+            cp "$GAPS_WORK_DIR/gap-measurements-stderr.log" "$TRACE_DIR/verify-measurement-gap-stderr.log"
+        fi
+        jq -s -c 'map(select((.measurementGap.ranges // []) | length > 0))
+                  | group_by(.assetId)
+                  | map({ assetId: .[0].assetId,
+                          links: length,
+                          missingPoints: (map(.measurementGap.missingPoints // 0) | add),
+                          ranges: (map(.measurementGap.ranges // []) | add) })
+                  | .[]' "$records_file" > "$TRACE_DIR/verify-reprocess-index.json"
+        info "Trace: $TRACE_DIR/verify-reprocess-index.json ($range_count gap ranges downloaded)"
+    fi
+}
+
+# A template that references a property the linked series does not carry resolves to
+# nothing. Those links fall back to their declared fragment/series, which is exactly the
+# query the templates were given to avoid, so it has to be said out loud.
+#
+# Usage: warn_unresolved_templates <link-records>
+warn_unresolved_templates() {
+    local links="$1" unresolved
+    [ "$MEASUREMENT_GAPS" = "true" ] || return 0
+    unresolved=$(printf '%s\n' "$links" \
+        | jq -s '[ .[] | select(.measurementFragment == null or .measurementSeries == null) ] | length')
+    if [ "$unresolved" -gt 0 ]; then
+        warn "$unresolved of $(count_lines "$links") links do not carry every property of --assetFragmentTemplate/--assetSeriesTemplate." \
+             "Their measurement gap is determined with the declared fragment and series instead."
+    fi
+}
+
+# Prints one console line per link that --gapsFor selected. They are not verification
+# errors -- the reverse index may well be correct for them by now -- but the measurements
+# they missed while it was not are what the run is about.
+#
+# Usage: report_selected_gaps <gaps-file>
+report_selected_gaps() {
+    local gaps_file="$1"
+    local gap_printed=0 gap_label gap_msg
+
+    [ -s "$gaps_file" ] || return 0
+
+    while IFS=$'\t' read -r gap_label gap_msg; do
+        if [ -z "$gap_label" ]; then continue; fi
+        gap_printed=$((gap_printed+1))
+        if [ "$gap_printed" -gt "$MAX_ERROR_LINES" ]; then continue; fi
+        if [ "$gap_label" = "MeasurementGap" ]; then
+            warn "$gap_label $gap_msg"
+        else
+            info "$gap_label $gap_msg"
+        fi
+    done < <(jq -r -s -L "$JQ_DIR" -f "$JQ_DIR/gap-messages.jq" "$gaps_file")
+
+    if [ "$gap_printed" -gt "$MAX_ERROR_LINES" ]; then
+        warn "$((gap_printed - MAX_ERROR_LINES)) further measurement gap lines suppressed." \
+             "Findings are printed first, so what is left out holds no gap. Use --traceDir for the complete list, or raise C8Y_DTM_MAX_ERROR_LINES."
+    fi
+}
+
+# Determines the measurement gaps of the links named by --gapsFor without verifying
+# anything, and without loading the tenant.
+#
+# The selection is parsed first, so only the assets it names are read, one request each
+# instead of an --includeAll over every asset with a linked series, and the reverse index
+# of their devices is never queried at all. What is left is the measurement side, which
+# is the part that was asked about.
+#
+# The trade off is stated rather than hidden: nothing here says whether the reverse index
+# is correct right now. A gap found in this mode is a gap in the data, not a verdict on
+# the link. Run verify without --gapsOnly for that.
+run_gap_analysis() {
+    local work_dir asset_ids asset_id_count device_only assets links selected_count
+    work_dir=$(mktemp -d)
+    # shellcheck disable=SC2064 # expand work_dir now, not when the trap runs
+    trap "rm -rf '$work_dir'" RETURN
+    GAPS_WORK_DIR="$work_dir"
+
+    info "Gap analysis only. The reverse index is not verified and only the selected assets are read."
+
+    parse_gap_selection "$work_dir/gap-selection.json" || return 1
+
+    device_only=$(jq -s '[ .[] | select(.assetId == null and .sourceId != null) ] | length' "$work_dir/gap-selection.json")
+    if [ "$device_only" -gt 0 ]; then
+        error "--gapsOnly cannot narrow the load to a device." \
+              "$device_only selector(s) name only a device, and finding its links means reading every asset. Name the assets instead, restrict with --gapsForError, or drop --gapsOnly."
+        return 1
+    fi
+
+    asset_ids=$(jq -c -s 'map({ id: .assetId }) | unique | .[]' "$work_dir/gap-selection.json")
+    asset_id_count=$(count_lines "$asset_ids")
+    info "Reading $asset_id_count selected assets..."
+
+    set +e
+    assets=$(
+      printf '%s\n' "$asset_ids" |
+      c8y inventory get \
+          --withError \
+          --abortOnErrors "$ABORT_ON_ERRORS" \
+          --select "id,self,${EXTERNAL_ID_FRAGMENT},${LINKED_SERIES_FRAGMENT}" \
+          --output json \
+          "${C8Y_FLAGS[@]}" 2>"$work_dir/c8y-stderr.log"
+    )
+    set -e
+    if [ -n "$TRACE_DIR" ] && [ -s "$work_dir/c8y-stderr.log" ]; then
+        cp "$work_dir/c8y-stderr.log" "$TRACE_DIR/verify-c8y-stderr.log"
+    fi
+
+    # An asset that could not be read, or that carries no linked series any more, cannot
+    # contribute a link. Both are worth naming: the report that selected it is older than
+    # the tenant it is being replayed against.
+    local usable unusable
+    usable=$(printf '%s\n' "$assets" | jq -c "select((.${LINKED_SERIES_FRAGMENT} | type) == \"array\")")
+    unusable=$((asset_id_count - $(count_lines "$usable")))
+    if [ "$unusable" -gt 0 ]; then
+        warn "$unusable of $asset_id_count selected assets could not be read or hold no linked series." \
+             "They are ignored. See the trace stderr log."
+    fi
+    if is_empty_result_set "$usable"; then
+        error "Nothing to analyse." "None of the selected assets holds a linked series."
+        return 1
+    fi
+    assets_with_linked_series="$usable"
+    trace_write "verify-assets.json" "$assets_with_linked_series"
+
+    links=$(
+      explode_assets_with_linked_series \
+        | jq -c --arg fragmentTemplate "$ASSET_FRAGMENT_TEMPLATE" \
+                --arg seriesTemplate "$ASSET_SERIES_TEMPLATE" \
+                --argjson sanitizeTemplate "$SANITIZE_TEMPLATE" \
+                -f "$JQ_DIR/link-records.jq"
+    )
+    if is_empty_result_set "$links"; then
+        error "Nothing to analyse." "None of the selected assets holds a linked series with a source device."
+        return 1
+    fi
+    trace_write "verify-explodedSeries.json" "$links"
+    printf '%s\n' "$links" > "$work_dir/links.json"
+    info "Found $(count_lines "$links") links on the selected assets."
+
+    warn_unresolved_templates "$links"
+
+    # No verification ran, so there are no failing links; everything is a selection.
+    local gap_records gap_statistics=""
+    gap_records=$(compute_measurement_gaps "" "$work_dir" "$work_dir/links.json")
+    trace_write "verify-measurement-gaps.json" "$gap_records"
+    if is_empty_result_set "$gap_records"; then
+        info "No measurement gaps determined."
+        return 0
+    fi
+
+    printf '%s\n' "$gap_records" > "$work_dir/gaps.json"
+    gap_statistics=$(jq -c -s --arg dateFrom "$GAPS_DATE_FROM" --arg dateTo "$GAPS_DATE_TO" \
+        -f "$JQ_DIR/gap-statistics.jq" "$work_dir/gaps.json")
+    trace_write "verify-statistics.json" "$gap_statistics"
+
+    if [ -n "$MISSING_MEASUREMENTS_FILE" ]; then
+        export_missing_measurements "$work_dir/gaps.json" "$work_dir/gap-points.json"
+    fi
+
+    report_selected_gaps "$work_dir/gaps.json"
+
+    if [ "$SHOW_STATS" = "true" ]; then
+        render_verification_statistics "$gap_statistics"
+    fi
+    return 0
 }
 
 # Verifies that every (asset, linked series) pair has a matching entry in the
@@ -562,7 +1404,10 @@ run_verification() {
     # One record per (asset, linked series) pair. "id" is the source device id.
     explodedSeries=$(
       explode_assets_with_linked_series \
-        | jq -c -f "$JQ_DIR/link-records.jq"
+        | jq -c --arg fragmentTemplate "$ASSET_FRAGMENT_TEMPLATE" \
+                --arg seriesTemplate "$ASSET_SERIES_TEMPLATE" \
+                --argjson sanitizeTemplate "$SANITIZE_TEMPLATE" \
+                -f "$JQ_DIR/link-records.jq"
     )
 
     if is_empty_result_set "$explodedSeries"; then
@@ -573,6 +1418,8 @@ run_verification() {
     total_collected=$(count_lines "$explodedSeries")
     info "Found $total_collected links to verify."
     trace_write "verify-explodedSeries.json" "$explodedSeries"
+
+    warn_unresolved_templates "$explodedSeries"
 
     # Query each source device only once. The links themselves are not piped to c8y,
     # they are matched locally afterwards.
@@ -587,6 +1434,10 @@ run_verification() {
     work_dir=$(mktemp -d)
     # shellcheck disable=SC2064 # expand work_dir now, not when the trap runs
     trap "rm -rf '$work_dir'" RETURN
+    # compute_measurement_gaps runs in a command substitution, so the work dir it sets
+    # there would not survive into export_missing_measurements. Both read and write the
+    # same intermediate files, so it is set here, in the shell that outlives them.
+    GAPS_WORK_DIR="$work_dir"
 
     # Temporarily disable exit on error to allow processing to continue
     set +e
@@ -649,13 +1500,18 @@ run_verification() {
     local gap_statistics=""
     if [ "$MEASUREMENT_GAPS" = "true" ]; then
         local gap_records
-        gap_records=$(compute_measurement_gaps "$error_items" "$work_dir")
+        gap_records=$(compute_measurement_gaps "$error_items" "$work_dir" "$work_dir/links.json")
         trace_write "verify-measurement-gaps.json" "$gap_records"
         if is_not_empty_result_set "$gap_records"; then
             printf '%s\n' "$gap_records" > "$work_dir/gaps.json"
             result=$(printf '%s\n' "$result" | jq -c --slurpfile gaps "$work_dir/gaps.json" -f "$JQ_DIR/gap-attach.jq")
             error_items=$(echo "$result" | jq -c 'select(.error != null)')
-            gap_statistics=$(jq -c -s -f "$JQ_DIR/gap-statistics.jq" "$work_dir/gaps.json")
+            gap_statistics=$(jq -c -s --arg dateFrom "$GAPS_DATE_FROM" --arg dateTo "$GAPS_DATE_TO" \
+                -f "$JQ_DIR/gap-statistics.jq" "$work_dir/gaps.json")
+
+            if [ -n "$MISSING_MEASUREMENTS_FILE" ]; then
+                export_missing_measurements "$work_dir/gaps.json" "$work_dir/gap-points.json"
+            fi
         fi
     fi
 
@@ -713,11 +1569,15 @@ run_verification() {
         fi
         printed=$((printed+1))
         error "$err_type" "$err_msg"
-    done < <(echo "$error_items" | jq -r -s -f "$JQ_DIR/verification-error-messages.jq")
+    done < <(echo "$error_items" | jq -r -s -L "$JQ_DIR" -f "$JQ_DIR/verification-error-messages.jq")
 
     if [ "$printed" -gt "$MAX_ERROR_LINES" ]; then
         warn "$((printed - MAX_ERROR_LINES)) further error lines suppressed." \
              "Use --outputFile or --traceDir to get the complete list, or raise C8Y_DTM_MAX_ERROR_LINES."
+    fi
+
+    if [ -n "$GAPS_FOR" ]; then
+        report_selected_gaps "$work_dir/gaps.json"
     fi
 
     if [ "$SHOW_STATS" = "true" ]; then
@@ -792,6 +1652,12 @@ if [ "$MODE" = "create" ]; then
     fi
     exit 1
 elif [ "$MODE" = "verify" ]; then
+    if [ "$GAPS_ONLY" = "true" ]; then
+        if run_gap_analysis; then
+            exit 0
+        fi
+        exit 1
+    fi
     if run_verification; then
         exit 0
     fi

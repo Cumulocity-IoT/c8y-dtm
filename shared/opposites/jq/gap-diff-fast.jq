@@ -23,7 +23,10 @@
 | ([ "skipped", "probeFailed", "noSourceData" ] | index($method) != null) as $noWork
 | (if $noWork then []
    elif .method == "assetEmpty" then
-     [ { dateFrom: .device.first, dateTo: .device.last, points: null } ]
+     # device.first is null when the oldest probe failed (typically a server side query
+     # timeout). The gap then starts no later than the window did, which is still a true
+     # statement, just a wider one.
+     [ { dateFrom: (.device.first // $dateFrom), dateTo: .device.last, points: null } ]
    elif .method == "timestampDiff" and .device.last != null and .asset.last != null
         and .device.last > .asset.last then
      [ { dateFrom: .asset.last, dateTo: .device.last, points: null } ]
@@ -39,9 +42,13 @@
         approximate: true }
       + (if .probeError != null then { probeError: .probeError } else {} end)
       + (if ($ranges | length) > 0 then
-            { notes: [ "Boundary-only estimate (--measurementGaps): the exact point count is",
-                       "unknown, and a gap the asset series later recovered from would not",
-                       "show up here. Rerun with --measurementGapsExact for exact data." ] }
+            { notes: ([ "Boundary-only estimate (--measurementGaps): the exact point count is",
+                        "unknown, and a gap the asset series later recovered from would not",
+                        "show up here. Rerun with --measurementGapsExact for exact data." ]
+                      + (if .method == "assetEmpty" and .device.first == null then
+                            [ "The oldest measurement of the device series could not be read, so the",
+                              "range starts at the window start instead and may be wider than the gap." ]
+                         else [] end)) }
          else {} end)) }
   + { missingTimes: [] }
   | del(.probeError)

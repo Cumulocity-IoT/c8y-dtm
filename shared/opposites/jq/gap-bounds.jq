@@ -3,7 +3,8 @@
 # Inputs: --slurpfile plan    plan records from gap-plan.jq
 #         --slurpfile probes  probe responses, each { url, key, side, bound, response }
 # Output: one bounds record per planned link:
-#         { key, assetId, fragment, series, sourceId, sourceFragment, sourceSeries,
+#         { key, assetId, fragment, series, assetFragment, assetSeries, sourceId,
+#           sourceFragment, sourceSeries, supportedSeriesShortcut,
 #           method, device: { first, last }, asset: { first, last }, probeError }
 #
 # method decides the work that follows:
@@ -12,6 +13,10 @@
 #   noSourceData   the device series holds no measurements, so nothing can be missing
 #   assetEmpty     the asset series is empty, every device measurement is missing
 #   timestampDiff  both sides hold data, the timestamps have to be compared
+#
+# A side that gap-supported-series.jq already classified was never probed, so only the
+# probes that were actually requested (probeDevice/probeAsset) are expected back. Missing
+# responses for a side that WAS requested still mean probeFailed.
 
 # The response shape of `c8y api` depends on whether go-c8y-cli unwraps the
 # collection, so accept the body, the unwrapped array and a single item alike.
@@ -37,19 +42,35 @@ def probeError:
 | ($byProbe[$l.key + "|device|last"])  as $dLast
 | ($byProbe[$l.key + "|asset|first"])  as $aFirst
 | ($byProbe[$l.key + "|asset|last"])   as $aLast
-| ([$dFirst, $dLast, $aFirst, $aLast] | map(if . == null then "no response for one of the boundary probes" else (. | probeError) end)
+| ($l.probeDevice != false) as $wantDevice
+| ($l.probeAsset  != false) as $wantAsset
+# Only the newest bound decides anything, so only its failure is fatal. A failed oldest
+# probe (the ascending query, the one that runs into server side timeouts) leaves first
+# unknown and is reported as a note, rather than throwing away a link whose gap can still
+# be determined. In the exact mode the oldest probe is not even sent.
+| ([ (if $wantDevice then $dLast else empty end),
+     (if $wantAsset  then $aLast else empty end) ]
+   | map(if . == null then "no response for one of the boundary probes" else (. | probeError) end)
    | map(select(. != null)) | first) as $err
+| ([ (if $wantDevice and $probeFirst then $dFirst else empty end),
+     (if $wantAsset  and $probeFirst then $aFirst else empty end) ]
+   | map(if . == null then "no response for the oldest measurement probe" else (. | probeError) end)
+   | map(select(. != null)) | first) as $errFirst
 | ($dFirst | if . == null then null else probeTime end) as $deviceFirst
 | ($dLast  | if . == null then null else probeTime end) as $deviceLast
 | ($aFirst | if . == null then null else probeTime end) as $assetFirst
 | ($aLast  | if . == null then null else probeTime end) as $assetLast
-| ($l | del(.probe))
+| ($l | del(.probe, .probeDevice, .probeAsset))
   + { device: { first: $deviceFirst, last: $deviceLast },
       asset: { first: $assetFirst, last: $assetLast },
-      probeError: (if $l.probe then $err else null end),
+      probeError: (if $l.probe then ($err // $errFirst) else null end),
+      # Classified on the newest measurement of each side: a series with no newest
+      # measurement in the window holds nothing in it, which is the same question the
+      # oldest probe would have answered, only cheaper and without the timeout.
       method: (if ($l.probe | not) then "skipped"
                elif $err != null then "probeFailed"
-               elif $deviceFirst == null then "noSourceData"
-               elif $assetFirst == null then "assetEmpty"
+               elif $l.supportedSeriesShortcut != null then $l.supportedSeriesShortcut
+               elif $deviceLast == null then "noSourceData"
+               elif $assetLast == null then "assetEmpty"
                else "timestampDiff"
                end) }

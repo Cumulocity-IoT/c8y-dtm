@@ -42,7 +42,11 @@ def idList(ids): (ids | length) as $n
     [ "The first child addition reference held no readable managed object.",
       "UNKNOWN: unexpected response shape, see verify-errors.json." ]
 } as $causeHelp
-| [ "Verification statistics",
+# --gapsOnly produces a statistics object that holds the measurement gap section only,
+# because nothing was verified. Everything below the gap section is skipped then rather
+# than rendered as a wall of nulls.
+| (if .assets == null then [ "Measurement gap statistics" ] else
+  [ "Verification statistics",
   "  Assets and their linked series",
   row("assets loaded"; .assets.loaded),
   row("... with a sourced linked series"; .assets.withSourceLinkedSeries),
@@ -100,12 +104,18 @@ def idList(ids): (ids | length) as $n
 + (if (.errorsByType | length) == 0 then [ "  Errors by type", "    none" ]
    else [ "  Errors by type" ] + (.errorsByType | to_entries | map(row(.key; plural(.value.devices; "device") + " / " + plural(.value.links; "link"))))
    end)
+  end)
 # Only present when verify ran with --measurementGaps.
 + (if .measurementGaps == null then []
    else [ "  Measurement gaps (device measurements that never reached the asset)",
-          row("missing links looked at"; .measurementGaps.links),
+          row("window looked at, from"; (.measurementGaps.window.dateFrom // "-")),
+          row("window looked at, to"; (.measurementGaps.window.dateTo // "-")),
+          row("links looked at"; .measurementGaps.links),
+          row("... missing in the reverse index right now"; .measurementGaps.failingLinks),
+          row("... selected with --gapsFor"; .measurementGaps.selectedLinks),
           row("probed"; .measurementGaps.probed),
           row("not probed (link limit reached)"; .measurementGaps.skipped),
+          row("classified from the supported series index"; .measurementGaps.supportedSeriesShortcut),
           row("with a gap"; .measurementGaps.withGaps),
           row("without a gap"; .measurementGaps.withoutGaps),
           row("undetermined (probe or query failed)"; .measurementGaps.failed),
@@ -124,8 +134,14 @@ def idList(ids): (ids | length) as $n
             "          extent of the device series is missing.",
             "        timestampDiff: both sides hold data, the reported ranges are the",
             "          timestamps present on the device and absent on the asset.",
+            "        Nothing outside the window above was looked at, so 'without a gap'",
+            "          only means 'no gap in that window'. Widen it with --dateFrom.",
             "        Measurements outside the tenant retention are already deleted, so a",
-            "          reported range is an upper bound of what can still be recovered." ]
+            "          reported range is an upper bound of what can still be recovered.",
+            "        The asset side is queried with the fragment/series declared on the",
+            "          asset unless --assetFragmentTemplate/--assetSeriesTemplate say",
+            "          otherwise. A smart function that persists elsewhere makes every",
+            "          link look empty, see OPPOSITES-CONTEXT.md." ]
         + (if .measurementGaps.approximate > 0 then
              [ "        Boundary-only estimate: point counts are unknown, and a gap the asset",
                "          series later recovered from is invisible. Rerun with",
