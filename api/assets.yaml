@@ -102,6 +102,14 @@ commands:
         type: boolean
         description: Indicates the resource to add the sub-assets in the response.
         required: false
+      - name: externalIds
+        type: string[]
+        description: Comma-separated list of external IDs to filter assets by.
+        required: false
+      - name: assetDefinitionId
+        type: string
+        description: Filter assets by their Asset Definition identifier.
+        required: false
       - name: onlyRoots
         type: boolean
         description: onlyRoots query parameter

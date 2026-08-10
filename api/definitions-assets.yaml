@@ -1,0 +1,84 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+---
+$schema: https://raw.githubusercontent.com/reubenmiller/go-c8y-cli/v2/tools/schema/extensionCommands.json
+group:
+  name: assetdefinitions
+  description: Manage Asset Definitions
+commands:
+  - name: list
+    description: Retrieve Asset Definitions.
+    method: GET
+    path: service/dtm/definitions/assets
+    descriptionLong: |
+      Retrieves all Asset Definitions registered in your tenant.
+
+      The query parameter supports a flexible syntax for filtering and ordering results.
+    queryParameters:
+      - name: query
+        type: string
+        description: Use the $filter keyword to specify filtering criteria.
+        required: false
+      - name: identifiers
+        type: string[]
+        description: Comma-separated list of Asset Definition identifiers to filter by.
+        required: false
+      - name: titles
+        type: string[]
+        description: Comma-separated list of Asset Definition titles to filter by.
+        required: false
+      - name: tags
+        type: string[]
+        description: Comma-separated list of tags to filter by.
+        required: false
+      - name: currentPage
+        type: integer
+        description: currentPage query parameter
+        required: false
+      - name: pageSize
+        type: integer
+        description: pageSize query parameter
+        required: false
+  - name: create
+    description: Create a new Asset Definition.
+    method: POST
+    path: service/dtm/definitions/assets
+    descriptionLong: |
+      Creates a new Asset Definition.
+
+      An Asset Definition includes a unique identifier and a composition object that specifies
+      allowed properties, sub-assets, and whether additional properties or sub-assets are permitted.
+  - name: update
+    description: Update an existing Asset Definition.
+    method: PUT
+    path: service/dtm/definitions/assets
+    descriptionLong: |
+      Updates an existing Asset Definition identified by the identifier in the request body.
+
+      The composition or JSON schema of the definition can be updated.
+  - name: detail
+    description: Retrieve an Asset Definition by identifier.
+    method: GET
+    path: service/dtm/definitions/assets/{identifier}
+    descriptionLong: Retrieves an existing Asset Definition by its unique identifier.
+    pathParameters:
+      - name: identifier
+        type: string
+        description: Unique identifier of the Asset Definition.
+        pipeline: true
+        pipelineAliases:
+          - id
+          - identifier
+  - name: delete
+    description: Delete an Asset Definition by identifier.
+    method: DELETE
+    path: service/dtm/definitions/assets/{identifier}
+    descriptionLong: |
+      Deletes an existing Asset Definition by its unique identifier.
+    pathParameters:
+      - name: identifier
+        type: string
+        description: Unique identifier of the Asset Definition.
+        pipeline: true
+        pipelineAliases:
+          - id
+          - identifier
