@@ -98,8 +98,8 @@ Series names carry characters that are structural in a URL: OPC UA source series
 
 The piped URL needs one encoding more because `c8y api` decodes it once before rebuilding
 the request. A traced request therefore *looks* over-encoded (`SOLL%2523PASTA_BIO`) while
-being exactly right — `gap-bound-requests.jq` carries the raw `source`/`fragment`/`series`
-alongside the URL so this can be checked without decoding by hand.
+being exactly right. (Nothing in the gap analysis pipes a URL any more; the double
+encoding matters again the moment a `c8y api` request is reintroduced.)
 
 **Verify with `--dry --dryFormat curl`, never with `--dryFormat json`.** The json format
 renders `.query` *already decoded*, so a correct request shows a bare `#`/`;` and looks
@@ -196,7 +196,7 @@ Modes: `create` / `clear` / `verify` / `get`.
 - `verify`: reads the reverse index and cross-checks against every asset's own
   `c8y_LinkedSeries`, reporting `MissingLinkedSeriesInChildAdditionError` etc. Flags:
   `--stats`, `--traceDir DIR` (writes every intermediate JSON — always use this when
-  debugging), `--measurementGaps` / `--measurementGapsExact` (see below and §4),
+  debugging), `--measurementGaps` (see below and §4), `--interval`,
   `--id` (single asset).
 - `get`: read-only dump of current opposite references.
 
@@ -204,48 +204,74 @@ Key jq programs, `shared/opposites/jq/`:
 `verification-statistics.jq`, `render-statistics.jq`, `verify-match-links.jq`,
 `verification-error-messages.jq`, `link-records.jq`, `explode-linked-series.jq`,
 `build-child-additions.jq`, `gap-plan.jq`, `gap-selection.jq`, `gap-selection-json.jq`,
-`gap-selection-plan.jq`, `gap-plan-merge.jq`, `gap-supported-series.jq`, `gap-bounds.jq`,
-`gap-bound-requests.jq`, `gap-diff.jq`, `gap-diff-fast.jq`, `gap-statistics.jq`,
+`gap-selection-plan.jq`, `gap-plan-merge.jq`, `gap-intervals.jq`, `gap-statistics.jq`,
 `gap-attach.jq`, `gap-messages.jq`, `gap-reprocess-plan.jq`, plus two modules that need
 `jq -L "$JQ_DIR"`: `gap-summary.jq` (shared by the two message renderers) and
 `gap-selectors.jq` (shared by the two `--gapsFor` parsers).
 
-### Measurement-gap analysis (`--measurementGaps`/`--measurementGapsExact`)
+### Measurement-gap analysis (`--measurementGaps`)
 
-For every `MissingLinkedSeriesInChildAdditionError`, reports the time range where the
-device has measurements the asset never got a copy of.
-- **Default (`--measurementGaps`)**: boundary-only — 4 cheap `pageSize=1` probes per
-  link (oldest/newest of both sides). Fast, but only sees a single trailing gap and never
-  learns an exact point count (`gap-diff-fast.jq`).
-- **`--measurementGapsExact`**: full `--includeAll` timestamp read of both series,
-  exact point-by-point diff (`gap-diff.jq`). Orders of magnitude more expensive — capped
-  by `C8Y_DTM_GAPS_MAX_LINKS` (default 100) and `C8Y_DTM_GAPS_MAX_POINTS` (default
-  500000). It sends only the *newest* boundary probe per side (2 instead of 4): the
-  oldest one is an ascending sort over the whole window, which on a time series store
-  regularly hits the server-side query timeout (`RemoteCommand ... expDate ...` in
-  `probeError`), while the descending one answers from the newest bucket. The
-  enumeration reports the oldest timestamp anyway.
-- **Read direction (CONFIRMED on t1298412)**: the *ascending* measurement query
-  (`--revert=false`, `$sort: {time: 1}`) is the one a time series store struggles with.
-  On a busy device series it has been observed both to time out server-side and — worse —
-  to return an **empty page with exit code 0 and nothing on stderr**, while the descending
-  read of the very same series answers immediately. Every enumeration therefore retries
-  newest-first when the oldest-first read returns nothing although the boundary probe
-  found data, and `gap-diff.jq` clips a partial descending read as a *suffix* rather than
-  a prefix. Symptom to recognise in a trace: `device.points: 0` next to a non-null
-  `device.last`.
-- **`verify-measurement-gap-enumerations.json`** (`--traceDir`) answers "were these
-  measurements actually read": one record per enumerated series with the source, the
-  fragment/series queried, the window, the read direction, the point count, first/last and
-  the probe's `last` for comparison. `C8Y_DTM_GAPS_TRACE_TIMES=1` adds every timestamp
-  (can be hundreds of thousands per link).
-- **Trusting a read**: a link is classified from the newest boundary probe, so an
-  enumeration that returns nothing while the probe found data is a failed read, not an
-  empty series — reported as `enumerationFailed`, never as "no gap" (device side) or
-  "everything missing" (asset side). An enumeration that stops early with an error still
-  delivered a valid ascending prefix and is used as a lower bound, exactly like one that
-  hit `C8Y_DTM_GAPS_MAX_POINTS`.
-- **Both query the asset side using the asset's declared `c8y_LinkedSeries`
+For every `MissingLinkedSeriesInChildAdditionError`, reports the time ranges in which the
+**asset** series received nothing. `--measurementGapsExact` is accepted as an alias; there
+is only one detection now.
+
+- **The method (family B of `GAP-DETECTION-OPTIONS.md`)**: measurements of one series
+  arrive at a fixed interval (two minutes ±seconds on t1298412, CONFIRMED). The asset
+  series is read once over the window and any hole longer than
+  `interval * C8Y_DTM_GAPS_INTERVAL_TOLERANCE` (default 1.5) is a gap
+  (`gap-intervals.jq`). One paged read per link, on the *small* side — a few series per
+  asset against 200+ on a device — and it sees interior gaps the asset later recovered
+  from, which the old boundary probes could not.
+- **The interval** is, in order: the value of `--interval` (`2m`, `120s`, a plain number
+  of seconds); otherwise the **p95 of the deltas of a sample of the SOURCE DEVICE series**
+  (one unpaged request per distinct source series, `C8Y_DTM_GAPS_INTERVAL_SAMPLE` newest
+  measurements, default 200); otherwise, if that sample is empty, the p95 of the asset
+  series itself. `measurementGap.intervalSource` records which of the three it was.
+- **Why p95 and not the median (CONFIRMED on t1298412)**: what a gap has to be measured
+  against is the longest *normal* spacing, not the typical one. Device `77300305` emits in
+  **bursts** — a pair of measurements 2.1s apart every ~118s — so its median is 2.1s and
+  its cadence is 118s. Judging that series by its median gives a 3.2s threshold and turns
+  every normal pause into a gap: on a reproduction of that series with one real 20-minute
+  hole, the median rule reports **50 ranges / 3322 missing** and the p95 rule reports
+  **1 range / 10 missing**. p90 through p99 are flat on both patterns (the distribution has
+  a hard ceiling at the cycle time), so the choice of high percentile barely matters —
+  only that it is high. `C8Y_DTM_GAPS_INTERVAL_PERCENTILE` overrides it.
+- **Why the device side**: the asset is the side with the holes being looked for, so
+  deriving an expectation from it lets the holes raise the expectation. One refinement
+  pass (drop the deltas above the first threshold, take the percentile again) covers the
+  rest, and it converges only while gaps are the *minority of the deltas* — which they
+  were on t1298412 (0.4–1.3% of deltas, though 12–29% of the time, because gaps are few
+  and long). A series that is mostly gap inflates its own interval and loses small gaps,
+  never invents them.
+- Deltas of zero are ignored, so duplicate timestamps cannot collapse the interval.
+- **Point counts are estimates**: gap length divided by the interval, never measurements
+  observed to be missing. The interior estimate is `round(delta/interval) - 1` (both ends
+  are measurements that arrived), the window-edge estimate `floor(delta/interval)`.
+  `--missingMeasurementsFile` is what establishes what is actually there.
+- **What it cannot tell apart**: a broken link and a device that was switched off leave
+  the same hole. The download settles it — a range that yields no device measurement means
+  the device was silent, and the run says so ("N of M gap ranges hold no device
+  measurement at all").
+- **`--suggestIntervals`** stops before any gap work and reports what the sampling found
+  per source series: points, p50/p90/p95/p99/max of the deltas, the **first 12 deltas**,
+  and a suggested `--interval`. The deltas are the point: no percentile can distinguish
+  "arrives in pairs" from "missing every other measurement" — an alternating short/long
+  sequence is a burst, an occasional long one among equals is a gap. It costs one request
+  per distinct source series and writes `verify-measurement-interval-samples.json`.
+- **Methods** in `measurementGap.method`: `interval` (judged), `assetEmpty` (nothing in
+  the whole window — the window itself is the range), `intervalUnknown` (fewer than two
+  measurements and no `--interval`, nothing is claimed), `readFailed` (the read returned
+  nothing *and* errored — no range is reported, or every device measurement would end up
+  in the reprocess batches), `skipped` (over `C8Y_DTM_GAPS_MAX_LINKS`).
+- **Read direction (CONFIRMED on t1298412)**: every measurement read is *descending*
+  (`--revert=true`). The ascending query (`$sort: {time: 1}`) is the one a time series
+  store struggles with: on a busy series it has been observed both to time out
+  server-side and — worse — to return an **empty page with exit code 0 and nothing on
+  stderr**, while the descending read of the same series answers immediately. Nothing
+  here sorts forward, and `gap-intervals.jq` sorts locally. A truncated read
+  (`C8Y_DTM_GAPS_MAX_POINTS`, default 500000) therefore covers the *recent* end of the
+  window, and only that part is judged.
+- **Query the asset side using the asset's declared `c8y_LinkedSeries`
   fragment/series unless `--assetFragmentTemplate`/`--assetSeriesTemplate` say
   otherwise.** Per §4, the declared values are only meaningful if the active smart
   function actually persists measurements under them. Confirm the smart function in use
@@ -256,18 +282,15 @@ device has measurements the asset never got a copy of.
   always means "no gap in that window" — the window is printed in `--stats` and stored in
   `verify-statistics.json` as `measurementGaps.window`. Widening it costs real time,
   which is exactly why the default is small.
-- **Supported-series pre-pass**: before probing, the `c8y_SupportedSeries` of every asset
-  and source device involved is read in one batched `c8y devices getSupportedSeries` call
-  (`gap-supported-series.jq`). A series absent from that index never held a measurement,
-  which classifies the link as `noSourceData` (0 probes) or `assetEmpty` (2 probes
-  instead of 4). Used as a negative only: the index ignores the window, so a series
-  present in it is still probed. If not one source device reports any supported series,
-  the index is treated as unusable and every link is probed as before. `--noSupportedSeries`
-  disables it. The output template must read the fragment with `std.get(output, ...)`:
-  a device that cannot be read answers with an error object, and jsonnet aborts the whole
-  batched call on a field that does not exist rather than yielding null for that one
-  record — the symptom is a stray "Alternatively, jsonnet is more relaxed than json"
-  block on stderr and an empty index for every id in the batch.
+- **Removed with the rewrite** (was: boundary probes, the exact two-sided diff, the
+  `c8y_SupportedSeries` pre-pass and `--noSupportedSeries`). The detection reads the asset
+  side only, so there is nothing left for a probe to classify or for the supported-series
+  index to skip. If a batched `c8y devices getSupportedSeries` is ever reintroduced, note
+  that its output template must read the fragment with `std.get(output, ...)`: a device
+  that cannot be read answers with an error object, and jsonnet aborts the *whole* batched
+  call on a field that does not exist rather than yielding null for that one record — the
+  symptom is a stray "Alternatively, jsonnet is more relaxed than json" block on stderr
+  and an empty index for every id in the batch.
 - **`--gapsFor SOURCE`** (implies `--measurementGaps`): also analyses links that are
   *not* failing right now. This is the flag for the normal repair sequence — a run
   reports broken links, `create` (or a reconcile) repairs the reverse index, and only
@@ -314,7 +337,12 @@ device has measurements the asset never got a copy of.
   the verification verdict or the exit code. A link that is both failing and selected is
   reported once, on its error line.
 - **`--missingMeasurementsFile FILE`**: downloads the *device* measurements behind the
-  reported ranges (in exact mode filtered to the exact missing timestamps), deduplicates
+  reported ranges (excluding the asset timestamps that bound an interior gap, which did
+  arrive, since both bounds of a measurement query are inclusive), **strips each one down
+  to the series the gap is about** (`gap-reprocess-measurement.jq` — a device measurement
+  normally carries several series and other fragments, none of which were missing;
+  sending them back would re-run every smart function on data that already arrived),
+  deduplicates
   them by measurement id and writes `FILE.0001.json`, `FILE.0002.json`, … each holding
   `{"measurements":[...]}` ready for `POST /service/dtm/reprocess/measurements`
   (`ROLE_DIGITAL_TWIN_ADMIN`, max batch size 10000 by default,
@@ -323,6 +351,27 @@ device has measurements the asset never got a copy of.
   on it and derives the asset side from the reverse index itself, so **repair the reverse
   index first** (`opposites create`, or DTM's reconcile endpoints) or the reprocessed
   measurements land nowhere.
+  A measurement reached through more than one range — several assets link the same source
+  series, or one measurement is missing several series — is folded into a **single**
+  payload carrying the union of the missing series (`gap-reprocess-merge.jq`), so it is
+  never sent twice. That merge is streaming: the caller sorts the records and the merge
+  key is the first field of every line, so only one measurement is held at a time.
+- **Splitting the output.** By default everything lands in one numbered series of batches.
+  - **`--missingMeasurementsPerAsset`** writes `FILE.<assetId>.0001.json`, each holding
+    exactly what that asset is missing (the merge key becomes asset + measurement id, so
+    the series of *other* assets do not leak in). This is a **reporting** split, not a
+    reprocessing one: the payload is the device measurement, so one asset's file can hold
+    measurements of several devices, and a measurement two assets are both missing is
+    written to both — the totals across the files exceed the distinct count, and the
+    success line states both.
+  - **`--missingMeasurementsPerDevice`** writes `FILE.<deviceId>.0001.json`. This is the
+    split that matches how reprocessing actually works: the payload is the device's own
+    measurement and dtm-data-service derives every linked asset from it via the reverse
+    index, so a measurement is sent **once** however many assets were missing it. A
+    measurement belongs to exactly one device, so nothing is duplicated across files (the
+    union over the per-device files equals the ungrouped set), and the series missing on
+    any asset of that device are merged into one payload.
+  - The two cannot be combined.
 
 ## 6. Known gotchas / tenant settings (CONFIRMED)
 
@@ -446,8 +495,8 @@ permission mode.
 ## 9. Useful commands
 
 - `opposites verify --traceDir DIR --stats` — always start here.
-- `c8y measurements list --device <id> --valueFragmentType <fragment> --valueFragmentSeries <series> --pageSize 1 --revert=false|true --select time` — cheap oldest/newest boundary probe (mind §4 on which fragment/series to actually use, and the percent-encoding note in §3).
-- `c8y measurements list ... --includeAll --select time` — full timestamp listing, expensive, only when an exact count/diff is needed.
+- `c8y measurements list --device <id> --valueFragmentType <fragment> --valueFragmentSeries <series> --pageSize 1 --revert=true --select time` — newest measurement of a series (mind §4 on which fragment/series to actually use, and the percent-encoding note in §3).
+- `c8y measurements list ... --revert=true --includeAll --select time` — full timestamp listing of a series, always descending (see §5 on read direction).
 - `c8y inventory get --id <id> --select id,lastUpdated` — minimal-cost check of when any managed object (asset, device, or the reverse-index child addition itself) was last touched.
 - `curl -u user:pass https://<tenant-host>/application/applicationsByName/dtm` — check a tenant's deployed `dtm` `activeVersionId`.
 - `c8y dtm settings list --raw` (via DTM's own settings endpoint) — check tenant options from §6 directly.

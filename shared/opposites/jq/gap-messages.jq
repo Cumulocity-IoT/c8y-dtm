@@ -1,6 +1,6 @@
 # Turns the gap records of the links selected with --gapsFor into one console message
 # each. Needs jq -L <jq-dir> for the gap-summary module.
-# Input:  gap records from gap-diff.jq / gap-diff-fast.jq, slurped (jq -s)
+# Input:  gap records from gap-intervals.jq, slurped (jq -s)
 # Output: text lines of "<label>\t<message>" (use jq -r)
 #
 # Only the selected links are reported here. A link that is failing right now already
@@ -16,7 +16,7 @@
 include "gap-summary";
 def gapLabel:
   (.measurementGap.method // "unknown") as $m
-  | if ([ "skipped", "probeFailed", "enumerationFailed", "unknown" ] | index($m)) != null then "MeasurementGapUnknown"
+  | if ([ "skipped", "readFailed", "intervalUnknown", "unknown" ] | index($m)) != null then "MeasurementGapUnknown"
     elif ((.measurementGap.ranges // []) | length) > 0 then "MeasurementGap"
     else "NoMeasurementGap"
     end;

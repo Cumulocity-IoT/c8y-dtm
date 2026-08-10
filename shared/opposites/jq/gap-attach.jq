@@ -1,5 +1,5 @@
 # Attaches the measurement gap of every probed link to its entry in the verdict.
-# Inputs: --slurpfile gaps  gap records from gap-diff.jq (without missingTimes)
+# Inputs: --slurpfile gaps  gap records from gap-intervals.jq
 # Input:  the verdicts of verify-match-links.jq, one per line (no slurp)
 # Output: the same verdicts, with a measurementGap object added to each entry of
 #         missingLinks that was probed. Everything else passes through unchanged.
