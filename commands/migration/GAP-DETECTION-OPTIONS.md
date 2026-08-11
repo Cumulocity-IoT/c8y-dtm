@@ -4,6 +4,8 @@ Discussion document. It lays out the ways a gap can be found, what each one need
 input, and what each one can and cannot see. It deliberately stops short of recommending
 one; the trade-offs are the point.
 
+**Where**: the `opposites-gap` command (split out of `opposites verify`).
+
 **What is implemented today**: family B — the asset series is read on its own and judged
 against an interval: declared with `--interval` (B1), otherwise sampled from the source
 device series (B2, the default), otherwise taken from the asset series itself (B3', the
@@ -79,8 +81,8 @@ Ask for the oldest and newest measurement of each side (`pageSize=1`, `revert`).
 - **Misses**: every interior gap, including one the asset later recovered from — both
   sides then report the same newest timestamp and nothing is reported at all. Never yields
   a point count.
-- **Status**: was implemented as the default of `--measurementGaps`, **removed** in
-  favour of B1/B2 below.
+- **Status**: was implemented as the default of `opposites verify --measurementGaps`,
+  **removed** in favour of B1/B2 below.
 - **Note**: the *descending* probe (`revert=true`) is cheap; the *ascending* one sorts
   forward over the whole window and has been observed to hit the server's query budget on
   `t1298412` (CONFIRMED). Classification only needs the descending one.
@@ -99,8 +101,7 @@ Enumerate every timestamp of both series and take the set difference.
   and nothing on stderr (CONFIRMED), which is indistinguishable from an empty series unless
   cross-checked against a boundary probe.
 - **Status**: was implemented as `--measurementGapsExact`, **removed** in favour of
-  B1/B2 below. `--measurementGapsExact` is still accepted as an alias of
-  `--measurementGaps`.
+  B1/B2 below.
 
 ### A3. Presence per aggregation bucket
 
@@ -161,7 +162,7 @@ A table of `series → max acceptable interval`, supplied as input.
 
 ### B3'. Threshold derived from the asset series itself — implemented, the fallback
 
-What `--measurementGaps` falls back to when neither `--interval` nor a device sample gives
+What `opposites-gap` falls back to when neither `--interval` nor a device sample gives
 an interval: the interval is the **p95 of the asset series' own consecutive deltas** inside the window, and any hole
 longer than `median * tolerance` is a gap. It is B3 without a separate reference period —
 the series calibrates itself from the same window it is judged in, which works because a
@@ -287,7 +288,7 @@ fails at T2 bounds the breakage; the reverse bounds the repair.
 
 What exists today: a previous run's `verify-errors.json` (or a pasted log) names the links
 that were broken, and the gap analysis is pointed at them after the repair
-(`--gapsFor`, `--gapsForError`).
+(`opposites-gap --for`, `--forError`).
 
 - **Input**: one prior report.
 - **Gives**: precisely *which* links to look at, which is the expensive part to guess.

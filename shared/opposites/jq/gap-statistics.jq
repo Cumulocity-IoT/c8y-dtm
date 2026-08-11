@@ -18,8 +18,6 @@ def gmissing: gap | .missingPoints;
   measurementGaps: {
     window: { dateFrom: $dateFrom, dateTo: $dateTo },
     links: length,
-    failingLinks: (map(select((.origin // "failing") == "failing")) | length),
-    selectedLinks: (map(select(.origin == "selected")) | length),
     probed: (map(select(gmethod != "skipped")) | length),
     skipped: (map(select(gmethod == "skipped")) | length),
     withGaps: (map(select((granges | length) > 0)) | length),

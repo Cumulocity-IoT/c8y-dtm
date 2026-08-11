@@ -11,8 +11,9 @@
 #         piped on.
 #
 # measurementFragment/measurementSeries are ONLY used to query measurements on the asset
-# (--measurementGaps). The reference verification keeps matching on the declared
-# fragment/series, because that is what the reverse index stores. They are null when a
+# (opposites-gap). The reference verification keeps matching on the declared
+# fragment/series, because that is what the reverse index stores; it passes the defaults
+# so that measurementFragment/measurementSeries simply reproduce the declared values. They are null when a
 # placeholder of the template resolves to nothing, so that the caller can report the
 # incomplete templates instead of querying a half-substituted series name.
 def placeholders($tpl): [ $tpl | scan("\\{([^{}]+)\\}") | .[0] ];

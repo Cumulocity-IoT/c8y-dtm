@@ -2,10 +2,8 @@
 # Input:  the failing verdicts of verify-match-links.jq, slurped (jq -s)
 # Output: text lines of "<ErrorType>\t<message>" (use jq -r). MissingLinkedSeries
 #         verdicts produce one line per missing link, everything else one per device.
-# Missing links carry the measurement gap that the missing opposite reference caused
-# when the verdict was enriched by --measurementGaps. Needs jq -L <jq-dir> for the
-# gap-summary module.
-include "gap-summary";
+# The measurement gap those missing links caused is a separate question, answered by the
+# opposites-gap command against this file.
 sort_by(.id) | .[] | . as $r |
         if .error == "CumulocityError" then
             "CumulocityError\t" + ((.c8yError.message // "request failed") | tostring)
@@ -18,8 +16,7 @@ sort_by(.id) | .[] | . as $r |
                   + " is missing in child addition " + ($r.childAdditionId|tostring)
                   + " of device " + ($r.id|tostring)
                   + " (source " + (.sourceFragment|tostring) + "." + (.sourceSeries|tostring)
-                  + ", source series present: " + (.sourceSeriesPresent|tostring) + ")"
-                  + gapSummary)
+                  + ", source series present: " + (.sourceSeriesPresent|tostring) + ")")
         elif .error == "NoVerificationResultError" then
             "NoVerificationResultError\tdevice " + (.id|tostring) + " returned no verification record, "
               + (.linkCount|tostring) + " links could not be verified"

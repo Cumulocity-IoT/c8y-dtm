@@ -138,7 +138,7 @@ under `fragment = sap_category_name`, `series` derived from
 
 ### Why this matters — do not skip this when investigating measurement gaps
 
-`opposites verify --measurementGaps[Exact]` (and any manual `c8y measurements list`
+`opposites-gap` (and any manual `c8y measurements list`
 check) queries measurements using the **asset's own declared** `fragment`/`series` from
 `c8y_LinkedSeries`. **This is only correct if the active smart function actually persists
 measurements under those values.** If a custom smart function transforms the fragment/
@@ -177,7 +177,7 @@ reference verification still matches on the declared fragment/series, which is w
 reverse index stores.
 
 This applies to any measurement-copy investigation, not just this repo's
-`--measurementGaps` feature — any manual check of "did this link copy data" needs the
+`opposites-gap` command — any manual check of "did this link copy data" needs the
 same care.
 
 ## 5. This repo's tooling (`c8y-dtm`)
@@ -196,24 +196,40 @@ Modes: `create` / `clear` / `verify` / `get`.
 - `verify`: reads the reverse index and cross-checks against every asset's own
   `c8y_LinkedSeries`, reporting `MissingLinkedSeriesInChildAdditionError` etc. Flags:
   `--stats`, `--traceDir DIR` (writes every intermediate JSON — always use this when
-  debugging), `--measurementGaps` (see below and §4), `--interval`,
-  `--id` (single asset).
+  debugging), `--id` (single asset).
 - `get`: read-only dump of current opposite references.
+
+It touches **no measurement data at all** — that is `opposites-gap` below. The two were
+one command until the gap analysis grew past the verification in size; they share the
+link records and nothing else at runtime, they are used at different points of a
+migration, and one reads the inventory while the other reads measurements by the hundred
+thousand.
 
 Key jq programs, `shared/opposites/jq/`:
 `verification-statistics.jq`, `render-statistics.jq`, `verify-match-links.jq`,
 `verification-error-messages.jq`, `link-records.jq`, `explode-linked-series.jq`,
-`build-child-additions.jq`, `gap-plan.jq`, `gap-selection.jq`, `gap-selection-json.jq`,
-`gap-selection-plan.jq`, `gap-plan-merge.jq`, `gap-intervals.jq`, `gap-statistics.jq`,
-`gap-attach.jq`, `gap-messages.jq`, `gap-reprocess-plan.jq`, plus two modules that need
-`jq -L "$JQ_DIR"`: `gap-summary.jq` (shared by the two message renderers) and
-`gap-selectors.jq` (shared by the two `--gapsFor` parsers).
+`build-child-additions.jq`.
 
-### Measurement-gap analysis (`--measurementGaps`)
+### `commands/migration/opposites-gap`
+
+Takes the report of `opposites verify` and answers "what did those links never receive?".
+One action, no modes: `opposites-gap --for <verify-errors.json> [args...]`.
+
+Key jq programs, `shared/opposites/jq/`: `gap-selection.jq`, `gap-selection-json.jq`,
+`gap-selection-plan.jq`, `gap-plan.jq`, `gap-interval-stats.jq`, `gap-interval-report.jq`,
+`gap-intervals.jq`, `gap-statistics.jq`, `gap-render-statistics.jq`, `gap-messages.jq`,
+`gap-reprocess-plan.jq`, `gap-reprocess-measurement.jq`, `gap-reprocess-merge.jq`, plus
+three modules that need `jq -L "$JQ_DIR"`: `gap-time.jq` (timestamp and cadence helpers),
+`gap-summary.jq` (the console rendering of one gap) and `gap-selectors.jq` (shared by the
+two `--for` parsers).
+
+### Measurement-gap analysis (`opposites-gap`)
 
 For every `MissingLinkedSeriesInChildAdditionError`, reports the time ranges in which the
-**asset** series received nothing. `--measurementGapsExact` is accepted as an alias; there
-is only one detection now.
+**asset** series received nothing. `--measurementGaps`, `--measurementGapsExact` and
+`--gapsOnly` are accepted as no-ops so that a command line moved over from `opposites
+verify` still runs — this command *is* the gap analysis, so all three say what it already
+does.
 
 - **The method (family B of `GAP-DETECTION-OPTIONS.md`)**: measurements of one series
   arrive at a fixed interval (two minutes ±seconds on t1298412, CONFIRMED). The asset
@@ -291,11 +307,12 @@ is only one detection now.
   call on a field that does not exist rather than yielding null for that one record — the
   symptom is a stray "Alternatively, jsonnet is more relaxed than json" block on stderr
   and an empty index for every id in the batch.
-- **`--gapsFor SOURCE`** (implies `--measurementGaps`): also analyses links that are
-  *not* failing right now. This is the flag for the normal repair sequence — a run
-  reports broken links, `create` (or a reconcile) repairs the reverse index, and only
-  afterwards does the question "what did those links never receive?" get asked, at which
-  point they no longer appear as errors and nothing would be probed for them.
+- **`--for SOURCE`** (`--gapsFor` still accepted) names the links to analyse, and is
+  required — there is no "analyse the whole tenant" mode, `--id` is the single-asset
+  shorthand. This is the normal repair sequence: a verify run reports broken links,
+  `create` (or a reconcile) repairs the reverse index, and only afterwards does the
+  question "what did those links never receive?" get asked, at which point they no longer
+  appear as errors at all.
   `SOURCE` is a comma separated list of asset ids or a file holding a previous run's
   JSON, a pasted console log, or plain asset ids. **`verify-errors.json` and
   `verify-result.json` from `--traceDir` are the intended input** — they select exactly
@@ -308,15 +325,14 @@ is only one detection now.
   a dot that can occur inside the fragment, so splitting it again could select the wrong
   link; selecting the asset costs a few more probes and is always right. Only *which*
   links to look at comes from `SOURCE`:
-  Selected links are reported as `MeasurementGap` (a gap was found), `NoMeasurementGap`
-  (looked at, nothing missing) or `MeasurementGapUnknown` (never looked at, or the probe
-  failed — *not* the same as "no gap"), findings first so the console line cap can only
-  cut into the least interesting end. Under `C8Y_DTM_GAPS_MAX_LINKS` the probe budget
-  goes to the currently failing links first, then to links named one by one, then to
-  whole assets, then to whole devices — one device-wide selector (a `CumulocityError`
-  line can carry hundreds of links) must not use up the budget before the named links are
-  covered.
-- **`--gapsForError TYPES`** decides which reported errors a `--gapsFor` source may
+  Links are reported as `MeasurementGap` (a gap was found), `NoMeasurementGap` (looked at,
+  nothing missing) or `MeasurementGapUnknown` (never looked at, or the read failed — *not*
+  the same as "no gap"), findings first so the console line cap can only cut into the
+  least interesting end. Under `C8Y_DTM_GAPS_MAX_LINKS` the budget goes to links named one
+  by one first, then whole assets, then whole devices — one device-wide selector (a
+  `CumulocityError` line can carry hundreds of links) must not use up the budget before
+  the named links are covered.
+- **`--forError TYPES`** (`--gapsForError` still accepted) decides which reported errors a `--for` source may
   select links from. The default is *every error except `CumulocityError`*: that one
   means the source device could not be read at all, so there is no reverse index to
   repair and nothing to reprocess into, while a single such line can carry hundreds of
@@ -324,15 +340,13 @@ is only one detection now.
   selector with no discoverable error type (a bare asset id, a hand written link) is
   never filtered. Log lines are matched on the `...Error` token they print, verdicts on
   their `error` field.
-- **`--gapsOnly`** (needs `--gapsFor`) determines the gaps without verifying anything:
-  only the selected assets are read, one `inventory get` each, and the reverse index of
-  their devices is never queried, so it does not load the tenant. It refuses to run when
-  a selector names only a device, because finding that device's links means reading every
-  asset anyway. What it cannot tell you is whether the reverse index is correct right now
-  — a gap found in this mode is a statement about the data, not a verdict on the link.
-  `--stats` then renders the measurement gap section only.
-  source, fragment and series are always read from the asset as it is now, so a report
-  of any age stays usable. Selected links are reported as `MeasurementGap` /
+- **Only the selected assets are read**, one `inventory get` each, and the reverse index
+  of their devices is never queried, so this does not load the tenant. It refuses to run
+  when a selector names only a device, because finding that device's links means reading
+  every asset anyway. What it cannot tell you is whether the reverse index is correct
+  right now — a gap here is a statement about the data, not a verdict on the link; run
+  `opposites verify` for that. Source, fragment and series are always read from the asset
+  as it is now, so a report of any age stays usable. Selected links are reported as `MeasurementGap` /
   `NoMeasurementGap` console lines and counted separately in `--stats`; they never change
   the verification verdict or the exit code. A link that is both failing and selected is
   reported once, on its error line.
@@ -444,7 +458,7 @@ step.
    this repo's migration tooling, DTM's UI) before assuming which one is responsible.
 6. **If a measurement-copy question is involved ("why is there no data on the asset"),
    go to §4 first** — confirm which smart function is active and what fragment/series it
-   actually persists under, before trusting any `--measurementGaps` output or manual
+   actually persists under, before trusting any `opposites-gap` output or manual
    measurement query.
 7. **Check the tenant's relevant settings** (§6 table) — reconciliation schedule/mode,
    permission mode, measurement-type mode — before assuming a particular mechanism is or
@@ -506,6 +520,7 @@ permission mode.
 ```
 c8y-dtm (this repo)
 ├── commands/migration/opposites               # the migration CLI command (create/clear/verify/get)
+├── commands/migration/opposites-gap           # the measurement-gap analysis and reprocess export
 ├── shared/opposites/jq/*.jq                    # all jq transforms used by the opposites command
 └── k6-opposite-concurrency/                    # write-path load/regression test harness (see its own README)
 

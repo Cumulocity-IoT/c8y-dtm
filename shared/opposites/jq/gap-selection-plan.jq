@@ -2,8 +2,7 @@
 # links that are actually on the assets right now.
 # Input:  the link records of link-records.jq, slurped (jq -s)
 # Inputs: --slurpfile selection  selectors from gap-selection.jq
-# Output: one candidate per matched link, same shape as gap-plan.jq's, with
-#         origin "selected".
+# Output: one candidate per matched link, for gap-plan.jq.
 #
 # Everything the gap analysis needs is taken from the live link, never from the
 # selector: a link that was reported broken weeks ago is looked at with the source,
@@ -42,6 +41,5 @@ def precision:
         sourceFragment: ($l.c8y_LinkedSeries.source.fragment // "" | tostring),
         sourceSeries: ($l.c8y_LinkedSeries.source.series // "" | tostring) }
     | . + { key: ([.assetId, .fragment, .series, .sourceId, .sourceFragment, .sourceSeries] | join("|")),
-            origin: "selected",
             selectionPrecision: $precision } ]
 | .[]
