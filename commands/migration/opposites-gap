@@ -128,9 +128,14 @@ Flags:
                            dtm-data-service: FILE.0001.json, FILE.0002.json, ... each holding
                            {"measurements":[...]}. Send them with:
                              for f in FILE.*.json; do
-                               c8y api POST /service/dtm/reprocess/measurements --file "\$f" \\
-                                   --header "Content-Type: application/vnd.com.nsn.cumulocity.measurementcollection+json"
+                               c8y api POST /service/dtmdata/reprocess/measurements \\
+                                   --data "\$(cat \$f)" \\
+                                   --contentType "application/vnd.com.nsn.cumulocity.measurementcollection+json"
                              done
+                           NOT --file: that uploads a multipart body and the service rejects
+                           it as invalid JSON. The endpoint also caps the body at 100 kb, so
+                           split into ~300-measurement chunks and drop id/self, which it will
+                           not accept anyway (~225 bytes per measurement once stripped).
                            Requires ROLE_DIGITAL_TWIN_ADMIN. Repair the reverse index first, the
                            reprocessed measurements are matched against it and land nowhere
                            without it.
@@ -156,6 +161,19 @@ Flags:
     --outputFile FILE      Write the gap records to FILE only if non-empty.
     --stats                Print detailed statistics after the analysis.
     --traceDir DIR         Write all intermediate data to DIR for troubleshooting.
+                           With --missingMeasurementsFile this also keeps every downloaded
+                           device measurement exactly as the tenant returned it, in
+                           gap-reprocess-downloads.json (one line per measurement, with the
+                           gap range it belongs to and whether it was reprocessed, so the
+                           two measurements bounding a gap are in there too) and
+                           gap-reprocess-downloads-summary.json (one line per range, with
+                           the counts and the value range of the series). That is the only
+                           record of what a reported gap was derived from - the batches
+                           hold only what was kept, stripped to one series.
+                           Budget for it: the raw response carries EVERY series of the
+                           fragment, which on an OPC UA device is dozens, so the file runs
+                           an order of magnitude larger than the batches (35 MB against
+                           1.1 MB on t1298412, 93 series per measurement on average).
 
 Environment:
     C8Y_DTM_ABORT_ON_ERRORS   Errors tolerated per c8y call before it aborts (default 1000000)
@@ -934,7 +952,7 @@ compute_measurement_gaps() {
 }
 
 # Downloads the device measurements behind the reported gaps and writes them as
-# ready-to-POST batches for POST /service/dtm/reprocess/measurements.
+# ready-to-POST batches for POST /service/dtmdata/reprocess/measurements.
 #
 # The payload is the ORIGINAL DEVICE measurement, never a reconstructed asset one:
 # dtm-data-service re-runs the smart functions on an ingested device measurement and
@@ -946,6 +964,44 @@ compute_measurement_gaps() {
 # gap was found on the asset alone, and a range that downloads nothing here means the
 # device sent nothing either, so there is nothing to recover.
 #
+# Records the raw response of one gap range download in the trace directory. Without it
+# the run keeps only what it decided to send, so a reported gap can be checked against
+# the reprocess batches but never against the measurements those were derived from - and
+# the measurements the range deliberately dropped are not in them at all.
+#
+# Two files, both appended to once per range:
+#   gap-reprocess-downloads.json          one line per downloaded measurement: the raw
+#                                         response, the range it belongs to, and whether
+#                                         it made it into the payload
+#   gap-reprocess-downloads-summary.json  one line per range: counts, time bounds and the
+#                                         value range of the series the gap is about
+#
+# A failure here must not take the run down with it - the data is already downloaded and
+# the batches are what the run is for - so both calls are allowed to fail loudly instead
+# of aborting under 'set -e'. GAP_FAILED / GAP_TRUNCATED are read from read_series.
+#
+# Usage: trace_download_range <group> <range-index> <range-file>
+trace_download_range() {
+    [ -n "$TRACE_DIR" ] || return 0
+    local group="$1" index="$2" range_file="$3" source="$3"
+
+    # A failed read leaves whatever arrived before the error in the file, which is not
+    # necessarily whole JSON. The summary still records the range, as a failed one.
+    [ "$GAP_FAILED" = "true" ] && source="/dev/null"
+
+    jq -c --argjson g "$group" --argjson range "$index" \
+        -f "$JQ_DIR/gap-reprocess-download.jq" "$source" \
+        >> "$TRACE_DIR/gap-reprocess-downloads.json" \
+      || warn "Could not write the download trace of gap range $index." "The reprocess batches are unaffected."
+
+    jq -c -n --argjson g "$group" --argjson range "$index" \
+        --argjson failed "$GAP_FAILED" --argjson truncated "$GAP_TRUNCATED" \
+        --slurpfile measurements "$source" \
+        -f "$JQ_DIR/gap-reprocess-download-summary.jq" \
+        >> "$TRACE_DIR/gap-reprocess-downloads-summary.json" \
+      || warn "Could not write the download summary of gap range $index." "The reprocess batches are unaffected."
+}
+
 # Usage: export_missing_measurements <records-file>
 export_missing_measurements() {
     local records_file="$1"
@@ -955,7 +1011,7 @@ export_missing_measurements() {
     local kept_file="$GAPS_WORK_DIR/gap-reprocess-kept.json"
     local merged_file="$GAPS_WORK_DIR/gap-reprocess-merged.tsv"
     local prefix group_count total=0 written stopped="false" batch_count
-    local group range_count empty_ranges=0 kept
+    local group range_count empty_ranges=0 kept range_index=0
 
     jq -c -n --slurpfile records "$records_file" \
         -f "$JQ_DIR/gap-reprocess-plan.jq" > "$plan_file"
@@ -968,9 +1024,16 @@ export_missing_measurements() {
 
     info "Downloading the measurements of $group_count gap ranges for reprocessing..."
     : > "$all_file"
+    # Truncated up front rather than appended to, so a second run in the same trace
+    # directory does not read as one run with twice the ranges.
+    if [ -n "$TRACE_DIR" ]; then
+        : > "$TRACE_DIR/gap-reprocess-downloads.json"
+        : > "$TRACE_DIR/gap-reprocess-downloads-summary.json"
+    fi
 
     while IFS= read -r group; do
         [ -n "$group" ] || continue
+        range_index=$((range_index + 1))
         read_series \
             "$(printf '%s' "$group" | jq -r '.sourceId')" \
             "$(printf '%s' "$group" | jq -r '.sourceFragment | @uri')" \
@@ -979,6 +1042,7 @@ export_missing_measurements() {
             "$(printf '%s' "$group" | jq -r '.dateTo')" \
             "" \
             "$range_file"
+        trace_download_range "$group" "$range_index" "$range_file"
         if [ "$GAP_FAILED" = "true" ]; then
             warn "Could not download the measurements of one gap range." \
                  "See the trace stderr log. The affected measurements are missing from the reprocess batches."
@@ -1079,11 +1143,16 @@ export_missing_measurements() {
         batch_count=$(( (written + REPROCESS_BATCH_SIZE - 1) / REPROCESS_BATCH_SIZE ))
         success "Wrote $written missing measurements to $batch_count reprocess batch file(s) '$prefix.NNNN.json'."
     fi
-    info "Send them with: for f in $prefix.*.json; do c8y api POST /service/dtm/reprocess/measurements --file \"\$f\" --header \"Content-Type: application/vnd.com.nsn.cumulocity.measurementcollection+json\"; done"
+    info "Send them with: for f in $prefix.*.json; do c8y api POST /service/dtmdata/reprocess/measurements --data \"\$(cat \$f)\" --contentType \"application/vnd.com.nsn.cumulocity.measurementcollection+json\"; done"
+    info "Not --file: that sends a multipart body the service rejects as invalid JSON. The endpoint caps the body at 100 kb, so split into ~300-measurement chunks and 'del(.id, .self)' first."
 
     if [ -n "$TRACE_DIR" ]; then
+        local downloaded_lines
         range_count=$(wc -l < "$plan_file" | tr -d ' \n\r\t')
         cp "$plan_file" "$TRACE_DIR/gap-reprocess-plan.json"
+        downloaded_lines=$(wc -l < "$TRACE_DIR/gap-reprocess-downloads.json" | tr -d ' \n\r\t')
+        info "Trace: $TRACE_DIR/gap-reprocess-downloads.json ($downloaded_lines measurements as the tenant returned them)"
+        info "Trace: $TRACE_DIR/gap-reprocess-downloads-summary.json (one line per downloaded gap range)"
         if [ -s "$GAPS_WORK_DIR/gap-measurements-stderr.log" ]; then
             cp "$GAPS_WORK_DIR/gap-measurements-stderr.log" "$TRACE_DIR/gap-measurements-stderr.log"
         fi
