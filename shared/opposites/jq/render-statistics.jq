@@ -42,7 +42,7 @@ def idList(ids): (ids | length) as $n
     [ "The first child addition reference held no readable managed object.",
       "UNKNOWN: unexpected response shape, see verify-errors.json." ]
 } as $causeHelp
-| [ "Verification statistics",
+| ([ "Verification statistics",
   "  Assets and their linked series",
   row("assets loaded"; .assets.loaded),
   row("... with a sourced linked series"; .assets.withSourceLinkedSeries),
@@ -99,5 +99,5 @@ def idList(ids): (ids | length) as $n
    end)
 + (if (.errorsByType | length) == 0 then [ "  Errors by type", "    none" ]
    else [ "  Errors by type" ] + (.errorsByType | to_entries | map(row(.key; plural(.value.devices; "device") + " / " + plural(.value.links; "link"))))
-   end)
+   end))
 | .[]

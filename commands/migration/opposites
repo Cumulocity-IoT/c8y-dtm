@@ -33,6 +33,9 @@ Description:
     In verify mode, opposite references are checked without changing them.
     In get mode, all opposite references are retrieved and displayed.
 
+    Finding the measurements a broken link caused the asset to miss is a separate command:
+    'opposites-gap --for <verify-errors.json>' takes this command's report and answers it.
+
 Flags:
     -h, --help             Show this help message
     --id                   Specify a single asset by ID or name to process opposite references for. Only used for verify mode.
@@ -44,6 +47,10 @@ Flags:
                            reverse index entries, error breakdown). Only used for create/verify mode.
     --traceDir DIR         Write all intermediate verification data to DIR for troubleshooting.
                            Only used for create/verify mode.
+
+Environment:
+    C8Y_DTM_ABORT_ON_ERRORS   Errors tolerated per c8y call before it aborts (default 1000000)
+    C8Y_DTM_MAX_ERROR_LINES   Error lines printed to the console (default 50)
 
 Examples:
     c8y dtm migration opposites create
@@ -58,6 +65,7 @@ Examples:
     c8y dtm migration opposites verify --stats
     c8y dtm migration opposites verify --traceDir ./trace
     c8y dtm migration opposites verify --stats --outputFile "verification_result.json" --traceDir ./trace
+    c8y dtm migration opposites-gap --for ./trace/verify-errors.json      # what those links missed
 
 Requirements:
     - go-c8y-cli authenticated session
@@ -305,7 +313,10 @@ run_verification() {
     # One record per (asset, linked series) pair. "id" is the source device id.
     explodedSeries=$(
       explode_assets_with_linked_series \
-        | jq -c -f "$JQ_DIR/link-records.jq"
+        | jq -c --arg fragmentTemplate "{fragment}" \
+                --arg seriesTemplate "{series}" \
+                --argjson sanitizeTemplate false \
+                -f "$JQ_DIR/link-records.jq"
     )
 
     if is_empty_result_set "$explodedSeries"; then
@@ -384,10 +395,10 @@ run_verification() {
         -f "$JQ_DIR/verify-match-links.jq"
     )
 
+    error_items=$(echo "$result" | jq -c 'select(.error != null)')
+
     printf '%s\n' "$result" > "$work_dir/result.json"
     trace_write "verify-result.json" "$result"
-
-    error_items=$(echo "$result" | jq -c 'select(.error != null)')
     trace_write "verify-errors.json" "$error_items"
 
     # The statistics object is the single source of truth for all verification counts,
@@ -397,6 +408,7 @@ run_verification() {
     statistics=$(build_verification_statistics \
         "$work_dir/assets.json" "$work_dir/links.json" \
         "$work_dir/devices.json" "$work_dir/result.json")
+
     trace_write "verify-statistics.json" "$statistics"
 
     IFS=$'\t' read -r links_checked links_missing links_unverifiable devices_with_errors series_reconcile < <(
@@ -434,7 +446,7 @@ run_verification() {
         fi
         printed=$((printed+1))
         error "$err_type" "$err_msg"
-    done < <(echo "$error_items" | jq -r -s -f "$JQ_DIR/verification-error-messages.jq")
+    done < <(echo "$error_items" | jq -r -s -L "$JQ_DIR" -f "$JQ_DIR/verification-error-messages.jq")
 
     if [ "$printed" -gt "$MAX_ERROR_LINES" ]; then
         warn "$((printed - MAX_ERROR_LINES)) further error lines suppressed." \

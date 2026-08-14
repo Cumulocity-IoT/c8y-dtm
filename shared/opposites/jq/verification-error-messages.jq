@@ -2,6 +2,8 @@
 # Input:  the failing verdicts of verify-match-links.jq, slurped (jq -s)
 # Output: text lines of "<ErrorType>\t<message>" (use jq -r). MissingLinkedSeries
 #         verdicts produce one line per missing link, everything else one per device.
+# The measurement gap those missing links caused is a separate question, answered by the
+# opposites-gap command against this file.
 sort_by(.id) | .[] | . as $r |
         if .error == "CumulocityError" then
             "CumulocityError\t" + ((.c8yError.message // "request failed") | tostring)
