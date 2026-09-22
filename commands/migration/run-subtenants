@@ -129,7 +129,7 @@ if ! command -v c8y >/dev/null 2>&1; then
 fi
 
 # Check if authenticated
-if ! c8y currentuser get >/dev/null 2>&1; then
+if ! c8y currentuser get -n >/dev/null 2>&1; then
     error "Not authenticated with Cumulocity. Please run 'set-session' first"
     exit 1
 fi
@@ -242,17 +242,17 @@ run_in_c8y_shell() {
 subtenant_list=""
 if [ "$USE_CURRENT_APPLICATION" = true ]; then
     # Get current application microservice name from session
-    subtenant_list=$(c8y currentapplication listSubscriptions --output json --includeAll)
+    subtenant_list=$(c8y currentapplication listSubscriptions -n --output json --includeAll)
 else 
   # Verify microservice exists
-  microservice_exists=$(c8y microservices list --includeAll --output csv --select name | grep -Fx "$MICROSERVICE_NAME" || true)
+  microservice_exists=$(c8y microservices list -n --includeAll --output csv --select name | grep -Fx "$MICROSERVICE_NAME" || true)
   if [ -z "$microservice_exists" ]; then
       error "Microservice '$MICROSERVICE_NAME' does not exist"
       exit 1
   fi
 
   # Get list of subtenants
-  subtenant_list=$(c8y microservices serviceusers get --id "$MICROSERVICE_NAME" --includeAll --output json)
+  subtenant_list=$(c8y microservices serviceusers get -n --id "$MICROSERVICE_NAME" --includeAll --output json)
 fi
 
 if [ -z "$subtenant_list" ] || [ "$subtenant_list" = "[]" ]; then
