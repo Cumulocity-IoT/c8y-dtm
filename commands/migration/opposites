@@ -476,7 +476,7 @@ run_verification() {
 if [ "$MODE" = "create" ]; then
     info "Started creating opposite reference..."
 
-    existing_childaddtions=$(c8y inventory find --pageSize 1 --type "c8y_LinkedSeriesReverseIndex")
+    existing_childaddtions=$(c8y inventory find -n --pageSize 1 --type "c8y_LinkedSeriesReverseIndex")
     if ! is_empty_result_set "$existing_childaddtions"; then
         error "Existing child additions detected." "There are already opposite references in the tenant. Stopping."
         exit 1
@@ -532,12 +532,13 @@ elif [ "$MODE" = "verify" ]; then
     exit 1
 elif [ "$MODE" = "clear" ]; then
     info "Clearing opposite references..."
-    c8y inventory find --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"
+    c8y inventory find -n --includeAll --type "c8y_LinkedSeriesReverseIndex" | c8y inventory delete "${C8Y_FLAGS[@]}"
 elif [ "$MODE" = "get" ]; then
     info "Retrieving opposite references..."
 
     child_additions=$(
         c8y inventory list \
+            -n \
             --type "c8y_LinkedSeriesReverseIndex" \
             --includeAll \
             --output json

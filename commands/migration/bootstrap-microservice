@@ -167,7 +167,7 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! c8y currentuser get >/dev/null 2>&1; then
+if ! c8y currentuser get -n >/dev/null 2>&1; then
     error "Not authenticated with Cumulocity. Please run 'set-session' first"
     exit 1
 fi
@@ -183,12 +183,12 @@ run_in_c8y_shell() {
 }
 
 # Check if application already exists
-app_id=$(c8y applications list --type MICROSERVICE --select id --filter "name eq '$SERVICE_NAME'" --includeAll --output csv --force 2>/dev/null) || true
+app_id=$(c8y applications list -n --type MICROSERVICE --select id --filter "name eq '$SERVICE_NAME'" --includeAll --output csv --force 2>/dev/null) || true
 
 if [ -n "$app_id" ]; then
     if [ "$REMOVE_APP_IF_EXISTS" = "TRUE" ]; then
         info "Removing existing application (ID: $app_id)..."
-        c8y applications delete --id "$app_id" --force
+        c8y applications delete -n --id "$app_id" --force
         app_id=""
     else
         error "Application with name '$SERVICE_NAME' already exists (ID: $app_id). Use --remove-existing to delete it first."
@@ -199,7 +199,7 @@ fi
 # Create application if needed
 if [ -z "$app_id" ]; then
     app_data="{\"contextPath\":\"$CONTEXT_PATH\",\"key\":\"${SERVICE_NAME}-key\",\"name\":\"$SERVICE_NAME\",\"settingsCategory\":\"$SETTINGS_CATEGORY\",\"requiredRoles\":$SERVICE_ROLES,\"type\":\"MICROSERVICE\"}"
-    app_create_output=$(c8y applications create --data "$app_data" --select id --output csv --force)
+    app_create_output=$(c8y applications create -n --data "$app_data" --select id --output csv --force)
     app_id="$app_create_output"
     if [ -z "$app_id" ]; then
         error "Failed to create application"
@@ -210,7 +210,7 @@ if [ -z "$app_id" ]; then
 fi
 
 # Subscribe application to tenant
-app_subscription=$(c8y tenants applications enable --application "$app_id" --tenant "$TENANT_ID" --force --output json)
+app_subscription=$(c8y tenants applications enable -n --application "$app_id" --tenant "$TENANT_ID" --force --output json)
 
 if [ -z "$app_subscription" ] || [ -z "$(echo "$app_subscription" | jq '.application // empty')" ]; then
   error "Failed to subscribe application to tenant"
@@ -219,7 +219,7 @@ if [ -z "$app_subscription" ] || [ -z "$(echo "$app_subscription" | jq '.applica
 fi
 
 # Get bootstrap user credentials
-bootstrap_json=$(c8y microservices getBootstrapUser --id "$app_id" --output json --force)
+bootstrap_json=$(c8y microservices getBootstrapUser -n --id "$app_id" --output json --force)
 bootstrap_user=$(echo "$bootstrap_json" | jq -r .name)
 bootstrap_pass=$(echo "$bootstrap_json" | jq -r .password)
 
@@ -229,7 +229,7 @@ if [ -z "$bootstrap_user" ] || [ "$bootstrap_user" = "null" ]; then
 fi
 
 # Get service user credentials (using bootstrap user in clean shell)
-service_json=$(run_in_c8y_shell "$bootstrap_user" "$bootstrap_pass" "$TENANT_ID" c8y microservices serviceusers get --id "$SERVICE_NAME" --output json --force)
+service_json=$(run_in_c8y_shell "$bootstrap_user" "$bootstrap_pass" "$TENANT_ID" c8y microservices serviceusers get -n --id "$SERVICE_NAME" --output json --force)
 
 service_user=$(echo "$service_json" | jq -r '.name' 2>/dev/null)
 service_pass=$(echo "$service_json" | jq -r '.password' 2>/dev/null)
@@ -241,7 +241,7 @@ if [ -z "$service_user" ] || [ "$service_user" = "null" ] || [ "$service_user" =
 fi
 
 # Get service user permissions
-user_json=$(run_in_c8y_shell "$service_user" "$service_pass" "$service_tenant" c8y currentuser get --output json --force)
+user_json=$(run_in_c8y_shell "$service_user" "$service_pass" "$service_tenant" c8y currentuser get -n --output json --force)
 user_permissions=$(echo "$user_json" | jq '[.effectiveRoles[].id]' 2>/dev/null)
 
 success "Microservice bootstrapped successfully"
@@ -249,7 +249,7 @@ success "Microservice bootstrapped successfully"
 # Subscribe to all subtenants if requested
 if [ "$SUBSCRIBE_SUBTENANTS" = "TRUE" ]; then
     info "Subscribing application to all subtenants..."
-    subscribed_tenants=$(c8y tenants list --select id --includeAll --output csv | \
+    subscribed_tenants=$(c8y tenants list -n --select id --includeAll --output csv | \
         c8y tenants applications enable --application "$app_id" --tenant - --force --output csv)
     success "Subscribed to $(wc -l <<<"$subscribed_tenants" | tr -d ' ') tenant(s)."
 fi

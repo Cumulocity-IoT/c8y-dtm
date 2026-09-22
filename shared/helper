@@ -70,7 +70,7 @@ check_prerequisites() {
     fi
 
     # Check if authenticated
-    if ! c8y currentuser get >/dev/null 2>&1; then
+    if ! c8y currentuser get -n >/dev/null 2>&1; then
         error "Not authenticated with Cumulocity. Please run 'set-session' first"
         exit 1
     fi
@@ -220,7 +220,8 @@ load_all_assets() {
     fi
 
     local c8y_args=(
-        inventory find 
+        inventory find
+        -n
         --includeAll 
         --fragmentType "c8y_IsAsset" 
         --select "$(join ',' "${select_fields[@]}")"

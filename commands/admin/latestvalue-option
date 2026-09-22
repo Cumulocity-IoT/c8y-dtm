@@ -130,14 +130,18 @@ check_prerequisites
 options=""
 if [ ! -t 0 ]; then
     options=$(cat)
-    # Reconnect stdin to the terminal to make confirmation prompts work
-    exec </dev/tty
+    # Reconnect stdin to the terminal to make confirmation prompts work.
+    # Only if a terminal is actually available (not the case in CI),
+    # otherwise the failing redirection aborts the script.
+    if (exec </dev/tty) 2>/dev/null; then
+        exec </dev/tty
+    fi
 fi
 
-current_options=$(c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY")
+current_options=$(c8y tenantoptions getForCategory -n --category "$LATEST_VALUE_CATEGORY")
 current_count=$(echo "$current_options" | jq -r 'keys[]' | wc -l | tr -d ' ')
 dtm_latestvalue_mode=$(
-    c8y tenantoptions get --category "dtm" --key "$DTM_CONFIG_KEY" --withError --silentExit --silentStatusCodes 404 |
+    c8y tenantoptions get -n --category "dtm" --key "$DTM_CONFIG_KEY" --withError --silentExit --silentStatusCodes 404 |
         jq -r '.value'
 )
 if is_empty_result_set "$dtm_latestvalue_mode"; then
@@ -179,7 +183,7 @@ fi
 if [ "$CLEAR" = "1" ]; then
     info "Clearing all tenant options in category $LATEST_VALUE_CATEGORY ..."
     result=$(
-        c8y tenantoptions getForCategory --category "$LATEST_VALUE_CATEGORY" |
+        c8y tenantoptions getForCategory -n --category "$LATEST_VALUE_CATEGORY" |
             jq -r 'keys[] | @uri | @uri' |
             c8y tenantoptions delete --category $LATEST_VALUE_CATEGORY "${C8Y_FLAGS[@]}"
     )
@@ -213,7 +217,7 @@ fi
 if [ "$ENABLE_ALL" = "1" ]; then
     info "Enabling latest value for all series by adding '*' for category $LATEST_VALUE_CATEGORY ..."
     result=$(
-        c8y tenantoptions create --category "$LATEST_VALUE_CATEGORY" --key "*" --value "" "${C8Y_FLAGS[@]}"
+        c8y tenantoptions create -n --category "$LATEST_VALUE_CATEGORY" --key "*" --value "" "${C8Y_FLAGS[@]}"
     )
     if [ "$REQUIRES_OUTPUT" -eq 1 ] && ! [ -z "$result" ]; then
         echo "$result"
