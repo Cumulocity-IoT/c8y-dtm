@@ -347,6 +347,13 @@ run_verification() {
     list_exit_code=$?
     set -e
 
+    # With --withError, c8y writes its final "jobs completed with N errors" summary to
+    # stdout as a JSON record. It is not a device record and would be counted as one
+    # below, so drop it. Per-device records (data or error) all carry an id.
+    if [ -n "$childAdditionsByDevice" ]; then
+        childAdditionsByDevice=$(printf '%s\n' "$childAdditionsByDevice" | jq -c 'select(has("id"))')
+    fi
+
     trace_write "verify-childAdditions.json" "$childAdditionsByDevice"
     if [ -n "$TRACE_DIR" ]; then
         cp "$work_dir/c8y-stderr.log" "$TRACE_DIR/verify-c8y-stderr.log"
@@ -364,9 +371,15 @@ run_verification() {
         return 1
     fi
 
-    if [ "$response_count" -ne "$unique_count" ]; then
+    if [ "$response_count" -lt "$unique_count" ]; then
         warn "Incomplete verification data. Queried $unique_count devices but received $response_count records." \
              "$((unique_count - response_count)) device(s) returned nothing (aborted request or output template error). Those links are reported as NoVerificationResultError."
+        if [ -s "$work_dir/c8y-stderr.log" ]; then
+            tail -n 10 "$work_dir/c8y-stderr.log" >&2
+        fi
+    elif [ "$response_count" -gt "$unique_count" ]; then
+        warn "Unexpected verification data. Queried $unique_count devices but received $response_count records." \
+             "$((response_count - unique_count)) record(s) more than devices queried. Only one record per device is matched, the rest is ignored."
         if [ -s "$work_dir/c8y-stderr.log" ]; then
             tail -n 10 "$work_dir/c8y-stderr.log" >&2
         fi
