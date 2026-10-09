@@ -43,7 +43,17 @@ def entrySourceKey: [(.fragment // "" | tostring), (.series // "" | tostring)] |
                          sourceFragment: .c8y_LinkedSeries.source.fragment,
                          sourceSeries: .c8y_LinkedSeries.source.series,
                          sourceSeriesPresent: ($sourceKeys[sourceKey] != null)
-                     })) }
+                     }
+                     # Only carried when an asset fragment/series template resolved to
+                     # something other than the declared values, so that the verdict of a
+                     # run without --assetFragmentTemplate/--assetSeriesTemplate keeps its
+                     # shape. This is the fragment/series the measurement gap analysis
+                     # queries on the asset, see link-records.jq.
+                     + (if .measurementFragment != .c8y_LinkedSeries.fragment
+                           or .measurementSeries != .c8y_LinkedSeries.series then
+                            { measurementFragment: .measurementFragment,
+                              measurementSeries: .measurementSeries }
+                        else {} end))) }
                end)
       end
   )

@@ -1,0 +1,32 @@
+# Turns the gap records into one console message each.
+# each. Needs jq -L <jq-dir> for the gap-summary module.
+# Input:  gap records from gap-intervals.jq, slurped (jq -s)
+# Output: text lines of "<label>\t<message>" (use jq -r)
+#
+# A link that was never looked at (over C8Y_DTM_GAPS_MAX_LINKS) or whose probe failed is
+# MeasurementGapUnknown, not NoMeasurementGap: nothing was measured, so "no gap" would be
+# a claim the run cannot make.
+#
+# Lines are ordered by how much they say, findings first, so that the caller's line cap
+# can only ever cut into the least interesting end of the list.
+include "gap-summary";
+def gapLabel:
+  (.measurementGap.method // "unknown") as $m
+  | if ([ "skipped", "readFailed", "intervalUnknown", "unknown" ] | index($m)) != null then "MeasurementGapUnknown"
+    elif ((.measurementGap.ranges // []) | length) > 0 then "MeasurementGap"
+    else "NoMeasurementGap"
+    end;
+def rank: { "MeasurementGap": 0, "MeasurementGapUnknown": 1, "NoMeasurementGap": 2 }[.] // 3;
+
+map(. + { gapLabel: gapLabel })
+| sort_by([ (.gapLabel | rank), .assetId, .key ])
+| .[]
+| .gapLabel
+  + "\tasset " + (.assetId | tostring)
+  + " series " + (.fragment | tostring) + "." + (.series | tostring)
+  + (if .assetFragment != .fragment or .assetSeries != .series then
+        " (read as " + (.assetFragment | tostring) + "." + (.assetSeries | tostring) + ")"
+     else "" end)
+  + " from " + (.sourceFragment | tostring) + "." + (.sourceSeries | tostring)
+  + " of device " + (.sourceId | tostring)
+  + gapSummary
