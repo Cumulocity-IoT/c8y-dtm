@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
-# Report the measurements dtm-data-service billed per tenant, read from the
-# c8y_MicroserviceBilling measurements in the management tenant.
+# Show the dtm-data-service usage statistics per tenant. 
 
 # shellcheck source=/dev/null
 source "$(dirname "$0")/../../shared/helper"
@@ -9,29 +8,21 @@ source "$(dirname "$0")/../../shared/constants"
 
 set -e
 
-BILLING_TYPE="c8y_MicroserviceBilling"
-REPORT_JQ="$(dirname "$0")/../../shared/billing/jq/report.jq"
+USAGE_TYPE="c8y_MicroserviceBilling"
+DTMDATA_JQ="$(dirname "$0")/../../shared/statistics/jq/dtmdata.jq"
 
 help() {
     cat <<EOF
-Report the measurements dtm-data-service billed per tenant.
+Show the dtmdata usage statistics per tenant.
 
 Usage:
-  c8y dtm billing report [--month YYYY-MM | --dateFrom <date> [--dateTo <date>]] [flags]
+  c8y dtm statistics dtmdata [--month YYYY-MM | --dateFrom <date> [--dateTo <date>]] [flags]
 
 Description:
-  dtm-data-service reports what it processed for each subscribed tenant to the
-  Cumulocity microservice billing API. The platform stores every report as a
-  measurement of type $BILLING_TYPE in the management tenant, on the
-  managed object of the tenant it bills.
+  Shows how many measurements dtm-data-service processed and created for each
+  tenant, summed per tenant (and per day or month with --groupBy).
 
-  This command reads those measurements and sums them per tenant (and per day
-  or month with --groupBy). Run it with a session for the management tenant.
-
-  The service gets a new application ID when it is deleted and installed
-  again. Records of every ID are summed into the tenant's row; the
-  application column lists the IDs (by name where the application still
-  exists).
+  Run it with a session for the management tenant.
 
   Columns:
     received                  input measurements processed (excluding reprocessing)
@@ -43,21 +34,16 @@ Description:
                               (= reprocessedPersistent + reprocessedTransient)
     reprocessedPersistent     ... stored in Cumulocity
     reprocessedTransient      ... forwarded without being stored (offloading)
-    reports                   billing records found (not a billed quantity)
 
-  A record is dated when it was reported, which is up to one report interval
-  (5 minutes by default) after the measurements it counts were processed.
+  Usage is recorded every few minutes. Activity in the last minutes of a period
+  can therefore be counted in the next period, but never twice.
 
 Flags:
       --month <YYYY-MM>       Calendar month (UTC). Shortcut for --dateFrom/--dateTo
       --dateFrom <date>       Start (ISO-8601 or relative, e.g. -7d). Default: start of the current month (UTC)
       --dateTo <date>         End. Default: now
       --tenant <ids>          Only these tenants (comma-separated tenant IDs)
-      --application <app>     Only this application ID, or the name of an installed application
-                              (dtm-data-service-1fm). The name finds only its current ID, not the IDs
-                              of earlier installations. Default: every application ID reporting
-                              dtmdata_measurements_* metrics
-      --groupBy <grouping>    tenant (default), day, month, or records (one row per billing record)
+      --groupBy <grouping>    tenant (default), day, month, or records (one row per recorded entry)
 
   -o, --output <format>       table (default on a terminal), json, csv, csvheader
       --select <columns>      Columns to show, e.g. tenant,created,received
@@ -71,23 +57,23 @@ EOF
 examples() {
     cat <<EOF
 Examples:
-  # Billed measurements per tenant for the current month so far
-  c8y dtm billing report
+  # dtmdata usage per tenant for the current month so far
+  c8y dtm statistics dtmdata
 
   # Last month, as CSV for a spreadsheet
-  c8y dtm billing report --month 2026-09 -o csvheader > billing-2026-09.csv
+  c8y dtm statistics dtmdata --month 2026-09 -o csvheader > dtmdata-2026-09.csv
 
   # One tenant, per day, for the last 7 days
-  c8y dtm billing report --tenant t12345 --dateFrom -7d --groupBy day
+  c8y dtm statistics dtmdata --tenant t12345 --dateFrom -7d --groupBy day
 
-  # Only the current installation of the service, per month, for a quarter
-  c8y dtm billing report --application dtm-data-service-1fm --dateFrom 2026-07-01 --dateTo 2026-10-01 --groupBy month
+  # Per tenant and month, for a quarter
+  c8y dtm statistics dtmdata --dateFrom 2026-07-01 --dateTo 2026-10-01 --groupBy month
 
-  # Every billing record of a tenant in a window, to audit single reports
-  c8y dtm billing report --tenant t12345 --dateFrom -2h --groupBy records
+  # Every recorded entry of a tenant in the last two hours
+  c8y dtm statistics dtmdata --tenant t12345 --dateFrom -2h --groupBy records
 
   # Machine-readable totals
-  c8y dtm billing report --month 2026-09 -o json
+  c8y dtm statistics dtmdata --month 2026-09 -o json
 EOF
     exit 0
 }
@@ -104,7 +90,6 @@ DATE_FROM=""
 DATE_TO=""
 MONTH=""
 TENANTS=""
-APPLICATION=""
 GROUP_BY="tenant"
 OUTPUT=""
 SELECT=""
@@ -130,11 +115,6 @@ while [ $# -gt 0 ]; do
     --tenant)
         require_value "$1" "$2"
         TENANTS="$2"
-        shift
-        ;;
-    --application)
-        require_value "$1" "$2"
-        APPLICATION="$2"
         shift
         ;;
     --groupBy)
@@ -209,28 +189,21 @@ fi
 
 check_prerequisites
 
+# The usage of all tenants is only available in the management tenant.
+current_tenant=$(c8y currenttenant get -n --select name --output csv "${C8Y_FLAGS[@]}" 2>/dev/null || true)
+if [ "$current_tenant" != "management" ]; then
+    error "This command must run in the management tenant." "The current session is for tenant '${current_tenant:-unknown}'. Switch with 'set-session'."
+    exit 1
+fi
+
 c8y_list_args=(
     measurements list -n
-    --type "$BILLING_TYPE"
+    --type "$USAGE_TYPE"
     --dateFrom "$DATE_FROM"
     --dateTo "$DATE_TO"
     --includeAll --pageSize 2000
     --output json --compact
 )
-
-APP_ID=""
-if [ -n "$APPLICATION" ]; then
-    if [[ "$APPLICATION" =~ ^[0-9]+$ ]]; then
-        APP_ID="$APPLICATION"
-    else
-        APP_ID=$(c8y applications get -n --id "$APPLICATION" --select id --output csv 2>/dev/null || true)
-        if [ -z "$APP_ID" ]; then
-            error "Application '$APPLICATION' not found." "Check the name with: c8y applications list --type MICROSERVICE"
-            exit 1
-        fi
-    fi
-    c8y_list_args+=(--valueFragmentType "${BILLING_TYPE}_${APP_ID}")
-fi
 
 # Narrow the query to the tenants' managed objects. The rows are still filtered
 # by tenant ID afterwards, so a name that matches an unrelated object is harmless.
@@ -244,20 +217,18 @@ if [ -n "$TENANTS" ]; then
         done < <(c8y inventory find -n --query "name eq '$tenant'" --select id --output csv 2>/dev/null || true)
     done
     if [ "${#sources[@]}" -eq 0 ]; then
-        warn "No managed object found for tenant(s) $TENANTS in this tenant. Is the session for the management tenant?"
+        warn "Tenant(s) $TENANTS not found. Use tenant IDs, e.g. t12345."
         exit 0
     fi
     c8y_list_args+=(--device "$(join ',' "${sources[@]}")")
 fi
 
-info "Reading $BILLING_TYPE measurements from $DATE_FROM to $DATE_TO ..."
+info "Reading dtmdata usage from $DATE_FROM to $DATE_TO ..."
 records=$(c8y "${c8y_list_args[@]}" "${C8Y_FLAGS[@]}")
-count=$(count_lines "$records")
-if [ "$count" -eq 0 ]; then
-    warn "No billing records found in this range."
+if [ "$(count_lines "$records")" -eq 0 ]; then
+    warn "No dtmdata usage found in this range."
     exit 0
 fi
-info "Found $count billing record(s)."
 
 # The tenant ID is the name of the tenant's managed object in the management tenant.
 names=$(
@@ -266,25 +237,17 @@ names=$(
         jq -s 'map({(.id): (.name // .id)}) | add // {}'
 )
 
-apps="{}"
-for id in $(echo "$records" | jq -r 'keys[] | select(startswith("'"$BILLING_TYPE"'_")) | ltrimstr("'"$BILLING_TYPE"'_")' | sort -u); do
-    name=$(c8y applications get -n --id "$id" --select name --output csv 2>/dev/null || true)
-    [ -n "$name" ] && apps=$(echo "$apps" | jq -c --arg id "$id" --arg name "$name" '.[$id] = $name')
-done
-
 rows=$(
     echo "$records" | jq -c -n \
         --argjson names "$names" \
-        --argjson apps "$apps" \
-        --arg app "$APP_ID" \
         --arg groupBy "$GROUP_BY" \
         --arg from "$DATE_FROM" \
         --arg to "$DATE_TO" \
         --arg tenants "$TENANTS" \
-        -f "$REPORT_JQ"
+        -f "$DTMDATA_JQ"
 )
 if is_empty_result_set "$rows"; then
-    warn "No dtm-data-service billing values found in this range."
+    warn "No dtmdata usage found in this range."
     exit 0
 fi
 
@@ -292,17 +255,17 @@ show_args=(--output "$OUTPUT")
 if [ "$OUTPUT" != "json" ]; then
     if [ -z "$SELECT" ]; then
         case "$GROUP_BY" in
-        records) SELECT="tenant,application,time,received,created,createdPersistent,createdTransient,reprocessed,reprocessedPersistent,reprocessedTransient" ;;
-        tenant) SELECT="tenant,application,received,created,createdPersistent,createdTransient,reprocessed,reprocessedPersistent,reprocessedTransient,reports" ;;
-        *) SELECT="tenant,application,period,received,created,createdPersistent,createdTransient,reprocessed,reprocessedPersistent,reprocessedTransient,reports" ;;
+        records) SELECT="tenant,time,received,created,createdPersistent,createdTransient,reprocessed,reprocessedPersistent,reprocessedTransient" ;;
+        tenant) SELECT="tenant,received,created,createdPersistent,createdTransient,reprocessed,reprocessedPersistent,reprocessedTransient" ;;
+        *) SELECT="tenant,period,received,created,createdPersistent,createdTransient,reprocessed,reprocessedPersistent,reprocessedTransient" ;;
         esac
     fi
-    # A total over all rows, for reading the report; JSON output stays one row per group.
+    # A total over all rows, for reading the table; JSON output stays one row per group.
     if [ "$GROUP_BY" != "records" ] && [ "$(count_lines "$rows")" -gt 1 ]; then
         total=$(echo "$rows" | jq -c -s '
-            {tenant: "TOTAL", application: "", period: ""}
+            {tenant: "TOTAL", period: ""}
             + (. as $r | reduce ("received", "created", "createdPersistent", "createdTransient",
-                "reprocessed", "reprocessedPersistent", "reprocessedTransient", "reports") as $k
+                "reprocessed", "reprocessedPersistent", "reprocessedTransient") as $k
                 ({}; .[$k] = ($r | map(.[$k]) | add)))')
         rows="$rows"$'\n'"$total"
     fi

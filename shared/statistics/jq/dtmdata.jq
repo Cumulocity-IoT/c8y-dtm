@@ -1,11 +1,11 @@
 # Turns c8y_MicroserviceBilling measurements (one JSON object per input line)
-# into billing rows for dtm-data-service.
+# into dtmdata usage rows. dtm-data-service reports its values under the
+# fragment c8y_MicroserviceBilling_<applicationId> as dtmdata_measurements_*.
+# The application ID changes when the service is reinstalled, so every ID is
+# read and summed into the same tenant.
 #
 # Arguments:
 #   $names     {"<managed object id>": "<tenant id>"} for the measurement sources
-#   $apps      {"<application id>": "<application name>"}, where known
-#   $app       application ID to keep, or "" for every application reporting
-#              dtmdata_measurements_* metrics
 #   $groupBy   records | tenant | day | month
 #   $from, $to the requested range, copied into tenant rows
 #   $tenants   comma-separated tenant IDs to keep, or ""
@@ -37,19 +37,15 @@ def sums: . as $rows
    | . as $m
    | to_entries[]
    | select(.key | startswith("c8y_MicroserviceBilling_"))
-   | select($app == "" or .key == "c8y_MicroserviceBilling_" + $app)
    | select(.value | type == "object" and (keys | any(startswith("dtmdata_measurements_"))))
    | .value as $f
    | ($m.time | ms) as $t
    | {
        tenant: ($names[$m.source.id] // $m.source.id),
-       tenantMo: $m.source.id,
-       applicationId: (.key | ltrimstr("c8y_MicroserviceBilling_")),
        time: $m.time,
        ms: $t,
        day: ($t | utc)[0:10],
        month: ($t | utc)[0:7],
-       id: $m.id,
        received: metric($f; "dtmdata_measurements_received"),
        created: metric($f; "dtmdata_measurements_created"),
        createdPersistent: metric($f; "dtmdata_measurements_created_persistent"),
@@ -58,31 +54,18 @@ def sums: . as $rows
        reprocessedPersistent: metric($f; "dtmdata_measurements_reprocessed_persistent"),
        reprocessedTransient: metric($f; "dtmdata_measurements_reprocessed_transient")
      }
-   | .application = ($apps[.applicationId] // .applicationId)
    | select(($keep | length) == 0 or (.tenant as $t | $keep | index($t)))
   ]
 | if $groupBy == "records" then
     sort_by(.tenant, .ms)[]
-    | {tenant, application, applicationId, time, id} + (. as $r | reduce metrics[] as $k ({}; .[$k] = $r[$k]))
+    | {tenant, time} + (. as $r | reduce metrics[] as $k ({}; .[$k] = $r[$k]))
   else
-    # Rows are per tenant, not per application ID: a reinstalled service gets a
-    # new ID, and its records still bill the same tenant.
     (if $groupBy == "day" then "day" elif $groupBy == "month" then "month" else null end) as $period
     | group_by([.tenant, (if $period then .[$period] else "" end)])
     | map(
-        (.[0]) as $first
-        | {
-            tenant: $first.tenant,
-            application: (map(.application) | unique | join(", ")),
-            applicationIds: (map(.applicationId) | unique)
-          }
-          + (if $period then {period: $first[$period]} else {from: $from, to: $to} end)
-          + sums
-          + {
-              reports: length,
-              firstReport: (map(.ms) | min | utc),
-              lastReport: (map(.ms) | max | utc)
-            }
+        {tenant: .[0].tenant}
+        + (if $period then {period: .[0][$period]} else {from: $from, to: $to} end)
+        + sums
       )
     | sort_by(.tenant, (.period // ""))[]
   end
